@@ -1,0 +1,54 @@
+# =========================
+# ESP32 / ESP-IDF / Arduino
+# =========================
+build/
+sdkconfig
+*.elf
+*.bin
+*.map
+*.hex
+*.axf
+*.bin.*.bin
+*.o
+*.pio/
+*.d
+*.dep
+*.dmp
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+venv/
+env/
+.env
+*.sqlite3
+*.log
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+*.code-workspace
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# esp-sr / Models / Data
+# =========================
+model/
+*.wav
+*.pcm
+*.mp3
+*.m4a
+*.raw
