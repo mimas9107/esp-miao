@@ -24,9 +24,11 @@ __pycache__/
 *.pyd
 venv/
 env/
+.venv/
 .env
 *.sqlite3
 *.log
+*.egg-info/
 
 # =========================
 # IDE / Editor
@@ -52,3 +54,8 @@ model/
 *.mp3
 *.m4a
 *.raw
+
+# =========================
+# Session files
+# =========================
+session-*.md

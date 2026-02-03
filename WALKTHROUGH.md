@@ -15,23 +15,24 @@
 
 ## Server Side
 
-* [ ] WebSocket server
-* [ ] Audio/text receiver
-* [ ] ASR pipeline
-* [ ] Ollama intent parser
-* [ ] Device table manager
-* [ ] Action router
-* [ ] Feedback audio API
-* [ ] Logging
+* [x] WebSocket server
+* [x] Audio/text receiver
+* [x] ASR pipeline (placeholder - integrate Whisper)
+* [x] Ollama intent parser
+* [x] Device table manager
+* [x] Action router
+* [x] Feedback audio API
+* [x] Logging
 
 ## Protocol
 
-* [ ] Define schema
-* [ ] Timeout handling
-* [ ] Retry logic
+* [x] Define schema (models.py)
+* [x] Timeout handling
+* [x] Retry logic (retry.py)
 
 ## Safety
 
-* [ ] GPIO whitelist
-* [ ] Action validation
-* [ ] Fail-safe default off
+* [x] GPIO whitelist
+* [x] Action validation
+* [x] Fail-safe default off
+
