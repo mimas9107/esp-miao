@@ -3,15 +3,15 @@
 
 ## ESP32 Side
 
-* [ ] Setup esp-idf / Arduino
+* [x] Setup esp-idf / Arduino (firmware/esp32_client)
 * [ ] Integrate esp-sr
 * [ ] Configure I2S mic
 * [ ] Enable WakeNet
 * [ ] Configure MultiNet commands
-* [ ] Implement local relay driver
-* [ ] Implement JSON client
-* [ ] Implement fallback sender
-* [ ] Implement feedback player
+* [x] Implement local relay driver
+* [x] Implement JSON client
+* [x] Implement fallback sender
+* [ ] Implement feedback player (placeholder only)
 
 ## Server Side
 
