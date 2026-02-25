@@ -1,0 +1,23 @@
+# ESP-MIAO Edge Impulse Wake Word - sdkconfig.defaults
+# Target: ESP32 DevKit V1 + INMP441
+
+# Target
+CONFIG_IDF_TARGET="esp32"
+
+# Flash
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Partition: use large single app (Edge Impulse model needs space)
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Compiler: optimize for performance (inference speed)
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# FreeRTOS
+CONFIG_FREERTOS_HZ=1000
+
+# Watchdog: enable but increase timeout for long inference
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10

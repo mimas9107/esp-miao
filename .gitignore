@@ -56,6 +56,19 @@ model/
 *.raw
 
 # =========================
+# Edge Impulse SDK (large, excluded — re-copy from esp-test if needed)
+# =========================
+firmware/esp32_edge_impulse/edge-impulse-sdk/
+firmware/esp32_edge_impulse/sdkconfig
+firmware/esp32_edge_impulse/dependencies.lock
+
+# =========================
+# ESP-IDF build cache
+# =========================
+managed_components/
+.cache/
+
+# =========================
 # Session files
 # =========================
 session-*.md

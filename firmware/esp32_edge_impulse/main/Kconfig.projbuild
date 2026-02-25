@@ -1,0 +1,17 @@
+menu "Edge Impulse Wake Word Configuration"
+
+    config EI_WAKE_WORD
+        string "Wake Word Label"
+        default "heymiaomiao"
+        help
+            The label name trained in Edge Impulse model.
+
+    config EI_VAD_THRESHOLD
+        int "VAD RMS Threshold"
+        default 1000
+        help
+            RMS energy threshold to gate inference.
+            Below this value, inference results are ignored as noise.
+            Quiet: <200, TV background: 500-800, Speech: 1000-7000.
+
+endmenu
