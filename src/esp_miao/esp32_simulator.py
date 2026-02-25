@@ -11,7 +11,9 @@ Usage:
 
 import argparse
 import asyncio
+import base64
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -161,16 +163,17 @@ class ESP32Simulator:
             "payload": {"text": text},
         }
 
-    def make_action_result(self, success: bool, error: str = None) -> dict:
-        """Create action_result message."""
-        payload = {"status": "success" if success else "failure"}
-        if error:
-            payload["error"] = error
+    def make_audio_request(self, audio_base64: str, duration_ms: int = 3000) -> dict:
+        """Create audio_request message."""
         return {
-            "type": "action_result",
+            "type": "audio_request",
             "device_id": self.config.device_id,
             "timestamp": self.get_timestamp(),
-            "payload": payload,
+            "payload": {
+                "audio_base64": audio_base64,
+                "audio_format": "pcm_16k_16bit",
+                "duration_ms": duration_ms,
+            },
         }
 
     # --- Action Handlers ---
@@ -283,6 +286,7 @@ class ESP32Simulator:
 
   {color("0-3", Colors.GREEN)}      Send local command (0=LIGHT_ON, 1=LIGHT_OFF, 2=FAN_ON, 3=FAN_OFF)
   {color("t <text>", Colors.GREEN)} Send fallback text request (e.g., 't 開燈')
+  {color("a <file>", Colors.GREEN)} Send audio request (e.g., 'a sample.wav')
   {color("w", Colors.GREEN)}        Simulate full wake->listen->recognize flow
   {color("s", Colors.GREEN)}        Show current state
   {color("h", Colors.GREEN)}        Show this help
@@ -291,6 +295,7 @@ class ESP32Simulator:
 {color("Example:", Colors.DIM)}
   > 0          # Send LIGHT_ON command
   > t 打開電風扇  # Send fallback text
+  > a voice.wav  # Send recorded audio
   > w          # Simulate wake word flow
 """
         )
@@ -302,13 +307,17 @@ class ESP32Simulator:
         while self.running:
             try:
                 # Use asyncio for non-blocking input
-                cmd = await asyncio.get_event_loop().run_in_executor(
+                cmd_line = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: input(f"{Colors.GREEN}> {Colors.ENDC}")
                 )
-                cmd = cmd.strip()
+                cmd_line = cmd_line.strip()
 
-                if not cmd:
+                if not cmd_line:
                     continue
+
+                parts = cmd_line.split(" ", 1)
+                cmd = parts[0]
+                args = parts[1] if len(parts) > 1 else ""
 
                 if cmd == "q":
                     self.running = False
@@ -351,15 +360,49 @@ class ESP32Simulator:
                     else:
                         self.log(f"Unknown command ID: {cmd_id}", "ERROR")
 
-                elif cmd.startswith("t "):
+                elif cmd == "t":
                     # Fallback text
-                    text = cmd[2:].strip()
-                    if text:
+                    if args:
                         await self.simulate_wake()
-                        result = await self.simulate_recognize(text=text)
+                        result = await self.simulate_recognize(text=args)
                         await self.process_command(*result)
                     else:
                         self.log("Please provide text after 't'", "ERROR")
+
+                elif cmd == "a":
+                    # Audio request
+                    if args:
+                        if os.path.exists(args):
+                            await self.simulate_wake()
+                            self.set_state(State.FORWARD_SERVER)
+                            
+                            with open(args, "rb") as f:
+                                data = f.read()
+                                if data.startswith(b"RIFF"):
+                                    data = data[44:]
+                                
+                                b64 = base64.b64encode(data).decode("utf-8")
+                                await self.send_message(self.make_audio_request(b64))
+                            
+                            self.set_state(State.WAIT_ACTION)
+                            response = await self.receive_message()
+                            
+                            # Handle response
+                            msg_type = response.get("type", "")
+                            if msg_type == "action":
+                                self.set_state(State.LOCAL_EXECUTE)
+                                success = await self.handle_action(response)
+                                await self.send_message(self.make_action_result(success))
+                                self.set_state(State.PLAY_FEEDBACK)
+                            elif msg_type == "play":
+                                self.set_state(State.PLAY_FEEDBACK)
+                                await self.handle_play(response)
+                            else:
+                                self.set_state(State.IDLE)
+                        else:
+                            self.log(f"File not found: {args}", "ERROR")
+                    else:
+                        self.log("Please provide filename after 'a'", "ERROR")
 
                 else:
                     self.log(f"Unknown command: {cmd}. Type 'h' for help.", "ERROR")

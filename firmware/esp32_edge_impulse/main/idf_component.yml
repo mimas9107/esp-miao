@@ -1,0 +1,3 @@
+## ESP-IDF Component Manager file
+dependencies:
+  espressif/esp_websocket_client: "*"

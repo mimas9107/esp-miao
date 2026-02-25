@@ -26,15 +26,19 @@ Mic (INMP441) → ESP32 (Edge Impulse)
                  ├─ MFCC Feature Extraction
                  ├─ TFLite Inference (heymiaomiao / noise / unknown)
                  ├─ RMS VAD Gate
-                 └─ Wake Action (LED blink)
-                      ↓ (future: fallback)
-                   Server
-                     ├─ ASR
-                     ├─ Ollama Intent
-                     ├─ Device Mapper
-                     └─ Action Router
+                 ├─ WiFi & WebSocket Client
+                 └─ Audio Streamer (Chunked, Base64)
                       ↓
-                   ESP32 Execute
+                   Server (Python FastAPI)
+                     ├─ WebSocket Handler & Audio Reassembler
+                     ├─ ASR (faster-whisper)
+                     ├─ LLM Intent Parser (Ollama, Keyword Fallback)
+                     ├─ Device Table Manager
+                     └─ Action Dispatcher
+                      ↓
+                   ESP32 (GPIO Control)
+                     ├─ JSON Command Parser
+                     └─ GPIO Control (Relay, LED)
 ```
 
 設計原則：
@@ -122,43 +126,89 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 | Layer  | Responsibility                                           |
 | ------ | -------------------------------------------------------- |
-| ESP32  | Wake word (Edge Impulse), audio frontend, relay, LED     |
-| Server | ASR, LLM intent, device table, routing, logging         |
+| ESP32  | Wake word (Edge Impulse), I2S audio, WiFi/WS client, GPIO control (relay, LED) |
+| Server | Audio reassembly, ASR (faster-whisper), LLM intent (Ollama), device table, routing, logging |
 | LLM    | JSON intent mapping only                                 |
 
 ---
 
 ## 6. JSON Protocol Design
 
-### 6.1 ESP32 → Server
+### 6.1 ESP32 → Server (Audio Streaming)
 
+ESP32 會先發送 `audio_start` 訊息，告知伺服器即將開始音訊串流，包含總採樣數。
 ```json
 {
-  "type": "command_request",
   "device_id": "esp32_01",
-  "timestamp": 17574239,
-  "text": "小E 開燈"
+  "timestamp": 123456789,
+  "type": "audio_start",
+  "payload": {
+    "audio_format": "pcm_16k_16bit",
+    "total_samples": 48000
+  }
 }
 ```
-
-### 6.2 Server → ESP32 Action
-
+隨後，ESP32 將音訊資料切割成多個 4KB (約 2048 採樣點) 的區塊，並以 Base64 編碼，分次發送 `audio_chunk` 訊息。
 ```json
 {
+  "device_id": "esp32_01",
+  "timestamp": 123456790,
+  "type": "audio_chunk",
+  "payload": {
+    "chunk_index": 0,
+    "is_last": false,
+    "data_base64": "..."
+  }
+}
+```
+當 `is_last` 為 `true` 時，伺服器會將所有區塊組裝成完整的音訊檔進行 ASR 和 LLM 處理。
+
+### 6.2 Server → ESP32 (Action / Play)
+
+伺服器處理完意圖後，會根據結果回傳 `action` 或 `play` 訊息。
+
+**Action 訊息 (控制硬體):**
+```json
+{
+  "device_id": "esp32_01",
+  "timestamp": 123456800,
   "type": "action",
-  "action": "relay_set",
-  "target": "light",
-  "value": "on",
-  "sound": "success.wav"
+  "payload": {
+    "action": "relay_set",
+    "target": "light",
+    "value": "on",
+    "sound": "success.wav"
+  }
 }
 ```
+ESP32 將解析此訊息，並根據 `action`、`target`、`value` 控制對應的 GPIO。
 
-### 6.3 ESP32 → Server Result
+**Play 訊息 (播放音效):**
+```json
+{
+  "device_id": "esp32_01",
+  "timestamp": 123456801,
+  "type": "play",
+  "payload": {
+    "audio": "not_understood.wav"
+  }
+}
+```
+ESP32 目前僅會記錄此訊息，未來可擴充播放功能。
+
+### 6.3 ESP32 → Server (Action Result)
+
+ESP32 執行完 `action` 後，會回傳 `action_result` 告知伺服器執行結果。
 
 ```json
 {
+  "device_id": "esp32_01",
+  "timestamp": 123456810,
   "type": "action_result",
-  "status": "success"
+  "payload": {
+    "status": "success",
+    "error": null
+  }
 }
 ```
 
@@ -171,16 +221,25 @@ Server 維護裝置表：
 ```json
 {
   "devices": [
-    {"name": "light", "type": "relay", "gpio": 26}
+    {"name": "light", "type": "relay", "gpio": 26},
+    {"name": "fan", "type": "relay", "gpio": 27},
+    {"name": "led", "type": "led", "gpio": 2}
   ]
 }
 ```
 
-Prompt 設計：
+LLM Prompt 設計範例 (用於 `qwen2.5:0.5b`)：
 
 ```
-你是控制系統，只能輸出 JSON。
-依照裝置表將指令轉成 action。
+Task: Convert voice command to JSON.
+Available devices: light, fan, led
+
+Examples:
+- Command: "幫我開燈" -> {"action": "relay_set", "target": "light", "value": "on"}
+- Command: "關掉風扇" -> {"action": "relay_set", "target": "fan", "value": "off"}
+
+Command: "用戶語音指令"
+Response in ONE LINE JSON format ONLY:
 ```
 
 ---
@@ -190,11 +249,10 @@ Prompt 設計：
 ```
 IDLE
  → WAKE (Edge Impulse: heymiaomiao detected)
- → LISTEN
- → RECOGNIZE
- → LOCAL_EXECUTE | FORWARD_SERVER
- → WAIT_RESULT
- → PLAY_FEEDBACK
+ → LISTEN (3秒錄音)
+ → FORWARD_SERVER (傳輸音訊串流)
+ → WAIT_ACTION (等待伺服器指令)
+ → LOCAL_EXECUTE (解析 JSON 並控制 GPIO) | PLAY_FEEDBACK (播放音效)
  → IDLE
 ```
 
@@ -206,8 +264,9 @@ IDLE
 esp-miao/
 ├── firmware/
 │   ├── esp32_edge_impulse/      # Edge Impulse 喚醒詞 (主要)
-│   │   ├── main/main.cpp        #   主程式
-│   │   ├── CMakeLists.txt       #   ESP-IDF build
+│   │   ├── main/main.cpp        #   主程式 (新增 WebSocket 連線, Audio Streaming, cJSON 解析, GPIO 控制)
+│   │   ├── main/CMakeLists.txt  #   ESP-IDF build (新增 json, esp_websocket_client 等依賴)
+│   │   ├── main/idf_component.yml #   ESP-IDF Component Manager (聲明 esp_websocket_client 依賴)
 │   │   ├── sdkconfig.defaults   #   硬體設定
 │   │   ├── edge-impulse-sdk/    #   SDK (copied, not in git)
 │   │   ├── tflite-model/        #   TFLite 模型 (git tracked)
@@ -216,16 +275,17 @@ esp-miao/
 │   ├── esp32_mic_test*/         # I2S 麥克風實驗
 │   └── mic_frontend_v1/         # VAD + Recorder 原型
 ├── src/esp_miao/
-│   ├── server.py                # FastAPI WebSocket server
-│   ├── models.py                # Pydantic protocol models
-│   ├── esp32_simulator.py       # ESP32 模擬器 CLI
+│   ├── server.py                # FastAPI WebSocket server (新增 ASR, Audio Reassembler, LLM Fallback)
+│   ├── models.py                # Pydantic protocol models (新增 AudioStreamStart/Chunk)
+│   ├── esp32_simulator.py       # ESP32 模擬器 CLI (支援 Audio Request)
 │   └── retry.py                 # Retry utilities
 ├── tests/
+│   ├── test_communication.py    # WebSocket 基礎通訊測試
+│   └── test_audio.py            # Audio Request (ASR) 流程測試
 ├── SPEC.md                      # Protocol specification
 ├── WALKTHROUGH.md               # Progress tracking
 ├── CHANGELOG.md                 # Version history
 └── README.md                    # This file
-```
 
 ---
 

@@ -143,6 +143,52 @@ class FallbackRequest(BaseMessage):
     payload: FallbackRequestPayload
 
 
+class AudioRequestPayload(BaseModel):
+    """Payload for audio_request with recorded PCM audio."""
+
+    audio_base64: str = Field(..., description="Base64 encoded PCM audio")
+    audio_format: str = Field("pcm_16k_16bit", description="Audio format")
+    duration_ms: int = Field(
+        ..., description="Audio duration in ms (e.g., 3000 for 3s)"
+    )
+
+
+class AudioRequest(BaseMessage):
+    """ESP32 sends recorded audio to server for processing."""
+
+    type: Literal["audio_request"] = "audio_request"
+    payload: AudioRequestPayload
+
+
+class AudioStreamStartPayload(BaseModel):
+    """Payload to start a chunked audio stream."""
+
+    audio_format: str = Field("pcm_16k_16bit", description="Audio format")
+    total_samples: int = Field(..., description="Total expected samples")
+
+
+class AudioStreamStart(BaseMessage):
+    """ESP32 signals start of audio stream."""
+
+    type: Literal["audio_start"] = "audio_start"
+    payload: AudioStreamStartPayload
+
+
+class AudioStreamChunkPayload(BaseModel):
+    """Payload for a single audio chunk."""
+
+    chunk_index: int = Field(..., description="Index of the chunk")
+    is_last: bool = Field(False, description="Whether this is the last chunk")
+    data_base64: str = Field(..., description="Base64 encoded PCM chunk")
+
+
+class AudioStreamChunk(BaseMessage):
+    """ESP32 sends an audio chunk."""
+
+    type: Literal["audio_chunk"] = "audio_chunk"
+    payload: AudioStreamChunkPayload
+
+
 class ActionResultPayload(BaseModel):
     """Payload for action execution result."""
 
@@ -191,7 +237,9 @@ class Play(BaseMessage):
 
 # --- Type unions for parsing ---
 
-ESP32ToServerMessage = Union[CommandRequest, FallbackRequest, ActionResult]
+ESP32ToServerMessage = Union[
+    CommandRequest, FallbackRequest, AudioRequest, ActionResult
+]
 ServerToESP32Message = Union[Action, Play]
 
 

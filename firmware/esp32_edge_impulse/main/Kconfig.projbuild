@@ -1,17 +1,13 @@
-menu "Edge Impulse Wake Word Configuration"
+# Kconfig for ESP-MIAO main component
 
-    config EI_WAKE_WORD
-        string "Wake Word Label"
-        default "heymiaomiao"
-        help
-            The label name trained in Edge Impulse model.
+config ESP_MIAO_WIFI_SSID
+    string "WiFi SSID"
+    default "YOUR_SSID"
+    help
+        WiFi SSID to connect to.
 
-    config EI_VAD_THRESHOLD
-        int "VAD RMS Threshold"
-        default 1000
-        help
-            RMS energy threshold to gate inference.
-            Below this value, inference results are ignored as noise.
-            Quiet: <200, TV background: 500-800, Speech: 1000-7000.
-
-endmenu
+config ESP_MIAO_WIFI_PASSWORD
+    string "WiFi Password"
+    default "YOUR_PASS"
+    help
+        WiFi Password to connect to.

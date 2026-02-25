@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-26
+
+### Added
+
+#### Server-side AI Processing & Communication
+- **ASR (Automatic Speech Recognition) Integration**
+  - 使用 `faster-whisper` 整合語音轉文字功能。
+  - `transcribe_audio` 函式現在能夠將 Base64 編碼的 PCM 音訊轉換為文本。
+  - 強制 Whisper 模型使用 `zh` 語言，顯著提高中文語音辨識準確度。
+- **Chunked Audio Streaming Protocol**
+  - **Server 支援**：新增 `audio_start` 和 `audio_chunk` 訊息類型，伺服器能夠接收分塊傳送的音訊資料，並在收到所有區塊後重新組裝成完整的音訊檔進行 ASR 處理。
+  - 改善 ESP32 記憶體使用效率，解決了單次傳輸大檔案造成的記憶體分配失敗問題。
+- **Enhanced LLM Intent Parsing**
+  - 優化 `parse_intent_with_llm` 的 Prompt，加入明確範例以引導 0.5b 小型 Ollama 模型產生更精確的 JSON 意圖。
+  - 強化了 **Keyword Fallback (關鍵字後備機制)**：當 LLM 的解析結果不符預期（例如 `target` 或 `value` 錯誤）時，系統將優先採用關鍵字比對的結果，大幅提升了語意辨識的可靠性與強健性。
+
+#### ESP32 Firmware Functionality
+- **WiFi & WebSocket Client**
+  - 實作了 ESP32 端的 WiFi 連線和 WebSocket 客戶端功能。
+  - 現在能夠穩定連接到伺服器並進行雙向通訊。
+- **Audio Streaming Implementation**
+  - 新增 `send_audio_stream` 函式，將喚醒詞偵測後的 3 秒音訊以 4KB 區塊透過 WebSocket 傳輸至伺服器。
+  - 解決了 ESP32 記憶體不足的問題。
+- **Server Action Execution**
+  - 整合 `cJSON` 函式庫，使 ESP32 能夠解析伺服器傳來的 JSON 動作指令。
+  - 實作 `handle_server_action` 函式，根據伺服器的 `action` (例如 `relay_set`, `led_set`) 和 `target` (例如 `light`, `fan`)，控制對應的 GPIO 腳位 (目前映射 light -> GPIO 26, fan -> GPIO 27, led -> GPIO 2)。
+  - 支援 `play` 動作指令（韌體端目前僅記錄，未實作音效播放）。
+- **Build System Updates**
+  - 更新 `firmware/esp32_edge_impulse/main/CMakeLists.txt`，正確聲明 `esp_websocket_client`, `json`, `driver` 等組件依賴，確保編譯順利。
+  - 建立了 `firmware/esp32_edge_impulse/main/idf_component.yml`，以支援 ESP-IDF Managed Components。
+
+#### Testing & Tools
+- **ESP32 Simulator Enhancement**
+  - `esp32_simulator.py` 現在支援發送 `audio_request`（`a <filename>` 指令），允許開發者在無實體硬體情況下測試伺服器的 ASR 和 LLM 管線。
+- **New Test Scripts**
+  - `tests/test_communication.py`：驗證 WebSocket 基礎通訊。
+  - `tests/test_audio.py`：驗證伺服器對音訊請求的處理，包括儲存和 ASR 流程。
+
+### Changed
+- **`firmware/esp32_edge_impulse/main/main.cpp`**：
+  - 移除了 Base64 編碼，改為使用 `mbedtls/base64.h`。
+  - 移除了單次大檔案 Base64 和 JSON 緩衝區分配。
+- **`src/esp_miao/server.py`**：
+  - 移除了舊的 `handle_audio_request` 邏輯，改由 `process_complete_audio` 處理完整音訊。
+  - `ConnectionManager` 增加了 `audio_buffers` 用於音訊分塊組裝。
+
+### Fixed
+- 修正了 `firmware/esp32_edge_impulse/main/main.cpp` 在沒有明確宣告 `esp_websocket_client`, `json`, `driver` 等組件依賴時造成的編譯錯誤 (`fatal error: ...: No such file or directory`)。
+- 解決了 ESP32 在嘗試一次性分配大量記憶體來傳輸完整 Base64 音訊時的 `Failed to allocate b64 buffer` 錯誤，透過分塊傳輸策略避免了記憶體溢出。
+
 ## [0.2.0] - 2026-02-25
 
 ### Added

@@ -67,7 +67,7 @@ firmware/esp32_edge_impulse/dependencies.lock
 # =========================
 managed_components/
 .cache/
-
+*.old
 # =========================
 # Session files
 # =========================

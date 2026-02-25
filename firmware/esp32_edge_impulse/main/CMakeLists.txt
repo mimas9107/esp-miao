@@ -47,6 +47,7 @@ list(APPEND SOURCE_FILES ${S_FILES_ESP_NN})
 list(APPEND SOURCE_FILES ${S_FILES_ESP_DSP})
 
 idf_component_register(SRCS "main.cpp" "${SOURCE_FILES}"
-                       INCLUDE_DIRS "${include_dirs}")
+                       INCLUDE_DIRS "${include_dirs}"
+                       REQUIRES esp_websocket_client esp_wifi esp_event nvs_flash esp_netif driver esp_timer esp_system esp_common json)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++17)

@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import time
+import io
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -15,11 +16,15 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 import ollama
+from faster_whisper import WhisperModel
 
 from .models import (
     Action,
     ActionPayload,
     ActionValidator,
+    AudioRequest,
+    AudioStreamStart,
+    AudioStreamChunk,
     CommandRequest,
     DeviceTable,
     Device,
@@ -71,20 +76,40 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, WebSocket] = {}
         self.pending_responses: dict[str, asyncio.Future] = {}
+        self.audio_buffers: dict[str, bytearray] = {}  # Store chunked audio per device
 
     async def connect(self, device_id: str, websocket: WebSocket):
         await websocket.accept()
         self.active_connections[device_id] = websocket
+        self.audio_buffers[device_id] = bytearray()
         logger.info(f"Device connected: {device_id}")
 
     def disconnect(self, device_id: str):
         if device_id in self.active_connections:
             del self.active_connections[device_id]
             logger.info(f"Device disconnected: {device_id}")
+        if device_id in self.audio_buffers:
+            del self.audio_buffers[device_id]
         # Cancel any pending futures
         if device_id in self.pending_responses:
             self.pending_responses[device_id].cancel()
             del self.pending_responses[device_id]
+
+    def clear_audio_buffer(self, device_id: str):
+        """Clear the audio buffer for a device."""
+        if device_id in self.audio_buffers:
+            self.audio_buffers[device_id] = bytearray()
+            logger.debug(f"Cleared audio buffer for {device_id}")
+
+    def append_audio_data(self, device_id: str, data: bytes):
+        """Append data to the audio buffer for a device."""
+        if device_id not in self.audio_buffers:
+            self.audio_buffers[device_id] = bytearray()
+        self.audio_buffers[device_id].extend(data)
+
+    def get_audio_data(self, device_id: str) -> bytes:
+        """Get the full audio data from the buffer."""
+        return bytes(self.audio_buffers.get(device_id, b""))
 
     async def send_to_device(self, device_id: str, message: dict) -> bool:
         """Send message to device. Returns True if successful."""
@@ -133,22 +158,75 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-# --- ASR Pipeline (Placeholder) ---
+# --- ASR Pipeline (Faster-Whisper) ---
+whisper_model: Optional[WhisperModel] = None
+
+
 async def transcribe_audio(
     audio_base64: str, audio_format: str = "pcm_16k_16bit"
 ) -> str:
     """
-    Transcribe audio to text.
-    TODO: Integrate with Whisper or other ASR service.
+    Transcribe audio to text using faster-whisper.
     """
-    logger.info(
-        f"ASR: Received audio ({len(audio_base64)} bytes base64, format={audio_format})"
-    )
-    # Placeholder - in production, integrate with:
-    # - OpenAI Whisper API
-    # - Local Whisper model
-    # - Other ASR services
-    return ""
+    global whisper_model
+    if whisper_model is None:
+        logger.error("Whisper model not initialized")
+        return ""
+
+    try:
+        # Decode base64 to bytes
+        audio_bytes = base64.b64decode(audio_base64)
+        
+        # Load audio data as a stream
+        # Faster-whisper can take a file path or a binary stream
+        # Note: it needs to know the format if it's raw PCM
+        # Since faster-whisper/ctranslate2 usually expects a file with header or 
+        # numpy array, we might need to wrap it.
+        
+        # For simplicity, we'll use the temporary WAV file approach if direct stream fails
+        # but let's try passing the bytes through io.BytesIO
+        
+        # Actually, let's use a temporary file to be safe with formats
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            # Write simple WAV header
+            from struct import pack
+            sample_rate = 16000
+            bits_per_sample = 16
+            channels = 1
+            data_size = len(audio_bytes)
+            
+            tmp.write(b"RIFF")
+            tmp.write(pack("<I", 36 + data_size))
+            tmp.write(b"WAVE")
+            tmp.write(b"fmt ")
+            tmp.write(pack("<I", 16))
+            tmp.write(pack("<H", 1))
+            tmp.write(pack("<H", channels))
+            tmp.write(pack("<I", sample_rate))
+            tmp.write(pack("<I", sample_rate * channels * (bits_per_sample // 8)))
+            tmp.write(pack("<H", channels * (bits_per_sample // 8)))
+            tmp.write(pack("<H", bits_per_sample))
+            tmp.write(b"data")
+            tmp.write(pack("<I", data_size))
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        try:
+            # Force language to 'zh' (Chinese) for better accuracy in this context
+            segments, info = whisper_model.transcribe(tmp_path, beam_size=5, language="zh")
+            text = "".join([segment.text for segment in segments]).strip()
+            logger.info(f"ASR (Whisper) [{info.language}]: {text}")
+            return text
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    except Exception as e:
+        logger.error(f"ASR error: {e}")
+        return ""
 
 
 # --- LLM Intent Parsing ---
@@ -162,8 +240,8 @@ DEVICE_ALIASES: dict[str, list[str]] = {
 
 # 動作關鍵字
 ACTION_KEYWORDS: dict[str, list[str]] = {
-    "on": ["開", "打開", "開啟", "啟動", "turn on", "on", "open"],
-    "off": ["關", "關閉", "關掉", "停止", "turn off", "off", "close"],
+    "on": ["開", "打開", "開啟", "啟動", "turn on", "on", "open", "kaitan"],
+    "off": ["關", "關閉", "關掉", "停止", "turn off", "off", "close", "kuan teng"],
 }
 
 
@@ -208,20 +286,16 @@ def parse_intent_with_llm(text: str) -> dict:
     keyword_intent = extract_intent_from_text(text)
     logger.debug(f"Keyword extraction: {text} -> {keyword_intent}")
 
-    # 如果關鍵字無法識別，直接返回 unknown
-    if keyword_intent["action"] == "unknown":
-        logger.info(f"No matching device in text: {text}")
-        return {"action": "unknown", "target": "", "value": ""}
-
     # 使用 LLM 解析
-    prompt = f"""你是智慧家庭控制系統。將指令轉成 JSON。
+    prompt = f"""Task: Convert voice command to JSON.
+Available devices: {device_names}
 
-可控制裝置：{device_names}
+Examples:
+- Command: "幫我開燈" -> {{"action": "relay_set", "target": "light", "value": "on"}}
+- Command: "關掉風扇" -> {{"action": "relay_set", "target": "fan", "value": "off"}}
 
-指令：{text}
-
-只輸出一行 JSON：
-{{"action": "relay_set", "target": "裝置名", "value": "on或off"}}
+Command: "{text}"
+Response in ONE LINE JSON format ONLY:
 """
 
     try:
@@ -244,12 +318,16 @@ def parse_intent_with_llm(text: str) -> dict:
         result = json.loads(result_text.strip())
         logger.info(f"LLM parsed: {text} -> {result}")
 
-        # 驗證 LLM 結果：target 必須在裝置列表中
-        if result.get("target") not in device_names:
-            logger.warning(
-                f"LLM returned invalid target '{result.get('target')}', using keyword result"
-            )
+        # 驗證邏輯：如果 LLM 結果無效，使用關鍵字結果
+        if result.get("target") not in device_names or result.get("value") not in ["on", "off"]:
+            logger.warning(f"LLM output invalid, falling back to keywords")
             return keyword_intent
+            
+        # 交叉驗證：如果關鍵字能精確識別出 target/value 但與 LLM 不同，以關鍵字為主
+        if keyword_intent["action"] != "unknown":
+            if result.get("target") != keyword_intent["target"] or result.get("value") != keyword_intent["value"]:
+                logger.warning(f"LLM disagreed with keywords, prioritizing keywords: {keyword_intent}")
+                return keyword_intent
 
         return result
 
@@ -371,10 +449,162 @@ async def handle_fallback_request(device_id: str, data: dict) -> dict:
         ).model_dump()
 
 
+async def handle_audio_request(device_id: str, data: dict) -> dict:
+    """Handle standard audio_request from ESP32."""
+    try:
+        msg = AudioRequest(**data)
+        audio_base64 = msg.payload.audio_base64
+        audio_format = msg.payload.audio_format or "pcm_16k_16bit"
+        return await process_complete_audio(device_id, audio_base64, audio_format)
+    except Exception as e:
+        logger.error(f"Audio request error: {e}")
+        return Play(
+            device_id=device_id,
+            timestamp=int(time.time() * 1000),
+            payload=PlayPayload(audio="error.wav"),
+        ).model_dump()
+
+
+async def process_complete_audio(
+    device_id: str, audio_base64: str, audio_format: str
+) -> dict:
+    """Core audio processing pipeline (ASR + LLM)."""
+    try:
+        # Decode base64 audio and save to file
+        audio_bytes = base64.b64decode(audio_base64)
+        logger.info(f" Audio processing: {len(audio_bytes)} bytes")
+
+        # Save audio file for debugging/processing
+        timestamp = int(time.time())
+        audio_filename = f"recorded_{device_id}_{timestamp}.wav"
+        audio_path = AUDIO_DIR / audio_filename
+
+        # Write WAV header + PCM data
+        from struct import pack
+
+        with open(audio_path, "wb") as f:
+            sample_rate = 16000
+            bits_per_sample = 16
+            channels = 1
+            data_size = len(audio_bytes)
+            file_size = 44 + data_size
+
+            f.write(b"RIFF")
+            f.write(pack("<I", file_size - 8))
+            f.write(b"WAVE")
+            f.write(b"fmt ")
+            f.write(pack("<I", 16))
+            f.write(pack("<H", 1))
+            f.write(pack("<H", channels))
+            f.write(pack("<I", sample_rate))
+            f.write(pack("<I", sample_rate * channels * (bits_per_sample // 8)))
+            f.write(pack("<H", channels * (bits_per_sample // 8)))
+            f.write(pack("<H", bits_per_sample))
+            f.write(b"data")
+            f.write(pack("<I", data_size))
+            f.write(audio_bytes)
+
+        logger.info(f"Audio saved to: {audio_path}")
+
+        # Transcribe audio to text
+        text = await transcribe_audio(audio_base64, audio_format)
+        logger.info(f"ASR result: {text}")
+
+        if not text:
+            return Play(
+                device_id=device_id,
+                timestamp=int(time.time() * 1000),
+                payload=PlayPayload(audio="not_understood.wav"),
+            ).model_dump()
+
+        # Parse intent with LLM
+        intent = parse_intent_with_llm(text)
+
+        if intent.get("action") == "unknown":
+            return Play(
+                device_id=device_id,
+                timestamp=int(time.time() * 1000),
+                payload=PlayPayload(audio="not_understood.wav"),
+            ).model_dump()
+
+        # Validate action
+        action = intent.get("action", "relay_set")
+        target = intent.get("target", "")
+        value = intent.get("value", "")
+
+        is_valid, error = action_validator.validate(action, target, value)
+        if not is_valid:
+            return Play(
+                device_id=device_id,
+                timestamp=int(time.time() * 1000),
+                payload=PlayPayload(audio="error.wav"),
+            ).model_dump()
+
+        return Action(
+            device_id=device_id,
+            timestamp=int(time.time() * 1000),
+            payload=ActionPayload(
+                action=action,
+                target=target,
+                value=value,
+                sound="success.wav",
+            ),
+        ).model_dump()
+
+    except Exception as e:
+        logger.error(f"Processing failed: {e}")
+        return Play(
+            device_id=device_id,
+            timestamp=int(time.time() * 1000),
+            payload=PlayPayload(audio="error.wav"),
+        ).model_dump()
+
+
+async def handle_audio_start(device_id: str, data: dict):
+    """Signal clear buffer for new streaming session."""
+    try:
+        msg = AudioStreamStart(**data)
+        manager.clear_audio_buffer(device_id)
+        logger.info(f"Stream start: {device_id} expecting {msg.payload.total_samples}")
+    except Exception as e:
+        logger.error(f"Audio start error: {e}")
+
+
+async def handle_audio_chunk(device_id: str, data: dict) -> Optional[dict]:
+    """Receive chunk and process if is_last."""
+    try:
+        msg = AudioStreamChunk(**data)
+        chunk_data = base64.b64decode(msg.payload.data_base64)
+        manager.append_audio_data(device_id, chunk_data)
+
+        if msg.payload.is_last:
+            full_audio = manager.get_audio_data(device_id)
+            full_audio_b64 = base64.b64encode(full_audio).decode("utf-8")
+            manager.clear_audio_buffer(device_id)
+            return await process_complete_audio(
+                device_id, full_audio_b64, "pcm_16k_16bit"
+            )
+
+        return None
+    except Exception as e:
+        logger.error(f"Audio chunk error: {e}")
+        return None
+
+
 # --- FastAPI App ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global whisper_model
     logger.info("ESP-MIAO Server starting...")
+    
+    # Initialize Whisper
+    try:
+        logger.info("Initializing Whisper model (base, cpu)...")
+        whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+        logger.info("Whisper model loaded.")
+    except Exception as e:
+        logger.error(f"Failed to load Whisper model: {e}")
+
     logger.info(f"Devices registered: {[d.name for d in device_table.devices]}")
     logger.info(f"Allowed actions: {ALLOWED_ACTIONS}")
     # Ensure audio directory exists
@@ -454,6 +684,15 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
                     response = await handle_command_request(device_id, data)
                 elif msg_type == "fallback_request":
                     response = await handle_fallback_request(device_id, data)
+                elif msg_type == "audio_request":
+                    response = await handle_audio_request(device_id, data)
+                elif msg_type == "audio_start":
+                    await handle_audio_start(device_id, data)
+                    continue
+                elif msg_type == "audio_chunk":
+                    response = await handle_audio_chunk(device_id, data)
+                    if response is None:
+                        continue
                 elif msg_type == "action_result":
                     logger.info(f"Action result from {device_id}: {data}")
                     # Resolve pending future if waiting
