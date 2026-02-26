@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-02-26
+
+### Optimized
+- **Memory Management (ESP32 DevKit V1 Optimization)**
+  - 將 3 秒錄音緩衝區 (`recording_buffer`) 從靜態分配改為動態分配 (`malloc`/`free`)。
+  - 成功釋放 **96KB** 的靜態 DRAM 空間，使系統平時運行的 DRAM 剩餘量從 **30KB** 提升至 **126KB**。
+  - 大幅提升了無 PSRAM 機種在處理 WebSocket 與 JSON 訊息時的穩定性。
+
+### Changed
+- **Threshold Fine-tuning**
+  - 調降 `VAD_THRESHOLD` 從 `2000` 至 **`1500`**，找回更好的語音活動偵測靈敏度。
+  - 調降 `EI_CLASSIFIER_THRESHOLD` 從 `0.9` 至 **`0.85`**，在保持穩定性的同時提升喚醒詞辨識的易用性。
+
 ## [0.3.3] - 2026-02-26
 
 ### Added
