@@ -44,7 +44,7 @@
 /* ---------- Configuration ---------- */
 
 // Removed hardcoded WIFI_SSID and WIFI_PASS, now from NVS/Kconfig
-#define SERVER_URL      "ws://192.168.1.103:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
+#define SERVER_URL      "ws://192.168.1.16:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
 
 #define LED_PIN         GPIO_NUM_2
 
@@ -283,7 +283,7 @@ static void init_websocket(void)
 #define DMA_BUF_COUNT   8
 #define DMA_BUF_LEN     256
 
-#define VAD_THRESHOLD   2000.0f
+#define VAD_THRESHOLD   1500.0f
 
 /* ---------- Recording Configuration ---------- */
 
@@ -296,9 +296,9 @@ static void init_websocket(void)
 static i2s_chan_handle_t rx_chan = NULL;
 static float ei_slice_buffer[EI_CLASSIFIER_SLICE_SIZE];
 
-/* ---------- Static Audio Buffer for Recording (3 seconds, 96KB) ---------- */
+/* ---------- Dynamic Audio Buffer for Recording (3 seconds, 96KB) ---------- */
 
-static int16_t recording_buffer[AUDIO_SAMPLES_3S];
+static int16_t *recording_buffer = NULL;
 static size_t recording_samples = 0;
 static bool recording_complete = false;
 
@@ -595,6 +595,13 @@ static void inference_task(void *arg)
             
             printf(">>> REC: Starting 3-second recording...\r\n");
             
+            // Allocate memory dynamically
+            recording_buffer = (int16_t *)malloc(AUDIO_BUFFER_SIZE_3S);
+            if (recording_buffer == NULL) {
+                printf(">>> REC: Failed to allocate memory (OOM)!\r\n");
+                continue;
+            }
+
             recording_samples = 0;
             recording_complete = false;
             
@@ -605,7 +612,7 @@ static void inference_task(void *arg)
                 recording_complete = true;
                 printf(">>> REC: Completed. Samples: %zu\r\n", recording_samples);
             } else {
-                printf(">>> REC: Failed!\r\n");
+                printf(">>> REC: Failed during I2S read!\r\n");
             }
             
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -621,6 +628,10 @@ static void inference_task(void *arg)
                     printf(">>> WAV: Send failed!\r\n");
                 }
             }
+            
+            // FREE memory after sending
+            free(recording_buffer);
+            recording_buffer = NULL;
             
             vTaskDelay(pdMS_TO_TICKS(500));
         }
