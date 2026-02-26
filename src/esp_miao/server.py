@@ -239,13 +239,18 @@ async def transcribe_audio(
             for segment in segments:
                 # 檢查每個片段的無聲機率
                 if segment.no_speech_prob < 0.7:
-                    # 簡單過濾重複幻聽模式 (e.g. "我認識了我認識了")
-                    # 如果字串長度大於 4 且後半部與前半部完全一樣，視為幻聽
+                    # 強化重複幻聽模式過濾 (例如 "哈哈哈哈" 或 "我認識了我認識了")
                     clean_text = segment.text.strip()
-                    if len(clean_text) >= 6:
+                    # 只要長度大於等於 4 且有明顯重複模式就攔截
+                    if len(clean_text) >= 4:
+                        # 檢查後半段是否重複前半段
                         half = len(clean_text) // 2
                         if clean_text[:half] == clean_text[half:]:
                             logger.info(f"Filtered out repetitive hallucination: '{clean_text}'")
+                            continue
+                        # 檢查連續四個字是否相同 (如 "哈哈哈哈")
+                        if len(clean_text) >= 4 and all(c == clean_text[0] for c in clean_text[:4]):
+                            logger.info(f"Filtered out repetitive character hallucination: '{clean_text}'")
                             continue
                     text_segments.append(clean_text)
                 else:
@@ -319,14 +324,22 @@ def parse_intent_with_llm(text: str) -> dict:
     # 先用關鍵字匹配提取意圖（作為驗證基準）
     keyword_intent = extract_intent_from_text(text)
     logger.debug(f"Keyword extraction: {text} -> {keyword_intent}")
+    
+    # 方案 A: 關鍵字攔截層 (Keyword Pre-filter)
+    # 如果內容完全沒提到裝置也沒有動作，不送 LLM，直接回傳 unknown
+    if keyword_intent["action"] == "unknown":
+        logger.info(f"Pre-filter: No keywords found in '{text}', skipping LLM.")
+        return keyword_intent
 
-    # 使用 LLM 解析
+    # 方案 B: 優化 LLM Prompt
     prompt = f"""Task: Convert voice command to JSON.
 Available devices: {device_names}
 
 Examples:
 - Command: "幫我開燈" -> {{"action": "relay_set", "target": "light", "value": "on"}}
 - Command: "關掉風扇" -> {{"action": "relay_set", "target": "fan", "value": "off"}}
+- Command: "哈哈笑" -> {{"action": "unknown", "target": "", "value": ""}}
+- Command: "哎呀乖乖" -> {{"action": "unknown", "target": "", "value": ""}}
 
 Command: "{text}"
 Response in ONE LINE JSON format ONLY:

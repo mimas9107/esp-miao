@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-02-26
+
+### Added
+- **Keyword Pre-filtering Layer (關鍵字預篩選攔截)**
+  - 在 Server 端導入「關鍵字先行」策略：若 ASR 辨識出的文字不包含任何裝置別名（如燈、風扇）或動作關鍵字（如開、關），則直接判定為誤觸，不再送往 LLM 解析。
+  - 大幅減少對「哈哈笑聲」、「非控制用語」的無效 LLM 解析負擔，並提升系統反應速度。
+- **LLM Prompt Optimization**
+  - 在 Prompt 中加入反例（如「哈哈笑」-> `unknown`），引導 LLM 在遇到無法解析的內容時主動回傳 unknown，而非胡亂發明動作。
+- **Enhanced Hallucination Filtering**
+  - 調低重複字過濾門檻，現在能攔截更短的重複幻聽（如 "哈哈哈哈"）。
+
 ## [0.3.2] - 2026-02-26
 
 ### Added
