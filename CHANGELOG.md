@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-02-26
+
+### Added
+- **ASR Hallucination Filtering**
+  - 在 Server 端加入 `no_speech_threshold=0.6` 參數，強化 Whisper 對無聲/底噪的過濾。
+  - 實作「重複短語過濾機制」，自動攔截常見的 Whisper 幻聽模式（如 "我認識了我認識了"）。
+- **Documentation Update**
+  - 在 `TROUBLESHOOTS.md` 中詳細紀錄了 Whisper 幻聽（Hallucination）的現象分析與應對方案。
+
+### Fixed
+- **Threshold Optimization**
+  - 將 `EI_CLASSIFIER_THRESHOLD` 進一步從 `0.8` 提升至 **`0.9`**，以應對高分誤判的環境底噪（曾觀測到 0.895 的底噪誤觸）。
+
 ## [0.3.1] - 2026-02-26
 
 ### Added

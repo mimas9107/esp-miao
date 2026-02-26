@@ -225,8 +225,33 @@ async def transcribe_audio(
 
         try:
             # Force language to 'zh' (Chinese) for better accuracy in this context
-            segments, info = whisper_model.transcribe(tmp_path, beam_size=5, language="zh")
-            text = "".join([segment.text for segment in segments]).strip()
+            segments, info = whisper_model.transcribe(
+                tmp_path, 
+                beam_size=5, 
+                language="zh",
+                no_speech_threshold=0.6,
+                log_prob_threshold=-1.0
+            )
+            
+            text_segments = []
+            import re
+            
+            for segment in segments:
+                # 檢查每個片段的無聲機率
+                if segment.no_speech_prob < 0.7:
+                    # 簡單過濾重複幻聽模式 (e.g. "我認識了我認識了")
+                    # 如果字串長度大於 4 且後半部與前半部完全一樣，視為幻聽
+                    clean_text = segment.text.strip()
+                    if len(clean_text) >= 6:
+                        half = len(clean_text) // 2
+                        if clean_text[:half] == clean_text[half:]:
+                            logger.info(f"Filtered out repetitive hallucination: '{clean_text}'")
+                            continue
+                    text_segments.append(clean_text)
+                else:
+                    logger.info(f"Filtered out hallucination segment: '{segment.text}' (no_speech_prob: {segment.no_speech_prob:.2f})")
+            
+            text = "".join(text_segments).strip()
             logger.info(f"ASR (Whisper) [{info.language}]: {text}")
             return text
         finally:
