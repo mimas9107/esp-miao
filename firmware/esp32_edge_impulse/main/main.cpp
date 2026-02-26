@@ -283,7 +283,7 @@ static void init_websocket(void)
 #define DMA_BUF_COUNT   8
 #define DMA_BUF_LEN     256
 
-#define VAD_THRESHOLD   1000.0f
+#define VAD_THRESHOLD   2000.0f
 
 /* ---------- Recording Configuration ---------- */
 
@@ -437,7 +437,7 @@ static bool read_audio_to_buffer(int16_t *out_buffer, size_t num_samples)
 
 /* ---------- Send Audio Stream via WebSocket (Chunked) ---------- */
 
-static bool send_audio_stream(const int16_t *audio_data, size_t sample_count)
+static bool send_audio_stream(const int16_t *audio_data, size_t sample_count, float confidence)
 {
     if (!ws_client || !ws_connected) {
         ESP_LOGE(TAG, "WebSocket not connected");
@@ -447,8 +447,8 @@ static bool send_audio_stream(const int16_t *audio_data, size_t sample_count)
     // 1. Send audio_start
     char start_json[256];
     snprintf(start_json, sizeof(start_json), 
-             "{\"device_id\":\"esp32_01\",\"timestamp\":%lu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu}}",
-             (unsigned long)xTaskGetTickCount(), sample_count);
+             "{\"device_id\":\"esp32_01\",\"timestamp\":%lu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f}}",
+             (unsigned long)xTaskGetTickCount(), sample_count, confidence);
     
     if (esp_websocket_client_send_text(ws_client, start_json, strlen(start_json), portMAX_DELAY) < 0) {
         return false;
@@ -567,17 +567,24 @@ static void inference_task(void *arg)
         }
 
         bool wake_word_detected = false;
+        float detected_confidence = 0.0f;
         
         for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
             if (strcmp(ei_classifier_inferencing_categories[i], "heymiaomiao") == 0) {
-                if (result.classification[i].value >= EI_CLASSIFIER_THRESHOLD && current_rms > VAD_THRESHOLD) {
+                detected_confidence = result.classification[i].value;
+                // Debug log for suspicious sounds
+                if (detected_confidence > 0.5) {
+                    printf("Probable hit: Conf: %.3f, RMS: %.2f\n", detected_confidence, current_rms);
+                }
+                
+                if (detected_confidence >= EI_CLASSIFIER_THRESHOLD && current_rms > VAD_THRESHOLD) {
                     wake_word_detected = true;
                 }
             }
         }
 
         if (wake_word_detected) {
-            printf("\r\n>>> 🐱 WAKE WORD DETECTED! 🐱 <<<\r\n\r\n");
+            printf("\r\n>>> 🐱 WAKE WORD DETECTED! (Conf: %.3f) 🐱 <<<\r\n\r\n", detected_confidence);
             
             for (int k = 0; k < 3; k++) {
                 gpio_set_level(LED_PIN, 1);
@@ -606,7 +613,7 @@ static void inference_task(void *arg)
             if (recording_complete && recording_samples > 0) {
                 printf(">>> WAV: Sending %zu samples via WebSocket (Streaming)...\r\n", recording_samples);
                 
-                bool sent = send_audio_stream(recording_buffer, recording_samples);
+                bool sent = send_audio_stream(recording_buffer, recording_samples, detected_confidence);
                 
                 if (sent) {
                     printf(">>> WAV: Sent successfully!\r\n");

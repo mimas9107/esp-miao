@@ -151,6 +151,7 @@ class AudioRequestPayload(BaseModel):
     duration_ms: int = Field(
         ..., description="Audio duration in ms (e.g., 3000 for 3s)"
     )
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Wake word confidence")
 
 
 class AudioRequest(BaseMessage):
@@ -165,6 +166,7 @@ class AudioStreamStartPayload(BaseModel):
 
     audio_format: str = Field("pcm_16k_16bit", description="Audio format")
     total_samples: int = Field(..., description="Total expected samples")
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Wake word confidence")
 
 
 class AudioStreamStart(BaseMessage):

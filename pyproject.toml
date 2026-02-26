@@ -1,6 +1,6 @@
 [project]
 name = "esp-miao"
-version = "0.1.0"
+version = "0.3.1"
 description = "ESP32 Voice Agent with esp-sr + Ollama LLM"
 readme = "README.md"
 requires-python = ">=3.11"

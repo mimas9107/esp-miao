@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-02-26
+
+### Added
+- **Confidence Score Tracking**
+  - ESP32 韌體現在會在 `audio_start` 訊息中傳送 Edge Impulse 的推論信心分數。
+  - Server 端會將信心分數紀錄於 Log 中，並在儲存 `.wav` 檔時將分數加入檔名（例如 `conf0.85_recorded_...wav`），方便偵錯與分析。
+- **Enhanced Debug Logging**
+  - ESP32 增加 `Probable hit` 日誌，即使未達觸發門檻也會輸出 RMS 與 Confidence 數值，方便調校 VAD 與模型門檻。
+
+### Fixed
+- **False Trigger Reduction (誤觸發攔截)**
+  - 調高 `EI_CLASSIFIER_THRESHOLD` 從 `0.7` 至 `0.8`。
+  - 調高 `VAD_THRESHOLD` 從 `1000` 至 `2000`，有效攔截環境底噪造成的安靜誤觸。
+  - 修正 Server 端在清空緩衝區前未正確擷取信心分數的邏輯錯誤。
+- **ASR Silence Handling**
+  - Server 端增加 ASR 空值攔截邏輯：若 Whisper 辨識結果為空（代表純雜訊或安靜），則跳過意圖解析並直接回傳 `not_understood.wav`。
+
 ## [0.3.0] - 2026-02-26
 
 ### Added

@@ -77,6 +77,7 @@ class ConnectionManager:
         self.active_connections: dict[str, WebSocket] = {}
         self.pending_responses: dict[str, asyncio.Future] = {}
         self.audio_buffers: dict[str, bytearray] = {}  # Store chunked audio per device
+        self.session_confidence: dict[str, float] = {}  # Store confidence per session
 
     async def connect(self, device_id: str, websocket: WebSocket):
         await websocket.accept()
@@ -90,16 +91,24 @@ class ConnectionManager:
             logger.info(f"Device disconnected: {device_id}")
         if device_id in self.audio_buffers:
             del self.audio_buffers[device_id]
+        if device_id in self.session_confidence:
+            del self.session_confidence[device_id]
         # Cancel any pending futures
         if device_id in self.pending_responses:
             self.pending_responses[device_id].cancel()
             del self.pending_responses[device_id]
 
-    def clear_audio_buffer(self, device_id: str):
-        """Clear the audio buffer for a device."""
+    def clear_audio_buffer(self, device_id: str, confidence: Optional[float] = None):
+        """Clear the audio buffer for a device and set session confidence."""
         if device_id in self.audio_buffers:
             self.audio_buffers[device_id] = bytearray()
-            logger.debug(f"Cleared audio buffer for {device_id}")
+        
+        if confidence is not None:
+            self.session_confidence[device_id] = confidence
+        else:
+            self.session_confidence.pop(device_id, None)
+            
+        logger.debug(f"Cleared audio buffer for {device_id}, confidence: {confidence}")
 
     def append_audio_data(self, device_id: str, data: bytes):
         """Append data to the audio buffer for a device."""
@@ -455,7 +464,8 @@ async def handle_audio_request(device_id: str, data: dict) -> dict:
         msg = AudioRequest(**data)
         audio_base64 = msg.payload.audio_base64
         audio_format = msg.payload.audio_format or "pcm_16k_16bit"
-        return await process_complete_audio(device_id, audio_base64, audio_format)
+        confidence = msg.payload.confidence
+        return await process_complete_audio(device_id, audio_base64, audio_format, confidence)
     except Exception as e:
         logger.error(f"Audio request error: {e}")
         return Play(
@@ -466,17 +476,23 @@ async def handle_audio_request(device_id: str, data: dict) -> dict:
 
 
 async def process_complete_audio(
-    device_id: str, audio_base64: str, audio_format: str
+    device_id: str, audio_base64: str, audio_format: str, confidence: Optional[float] = None
 ) -> dict:
     """Core audio processing pipeline (ASR + LLM)."""
     try:
         # Decode base64 audio and save to file
         audio_bytes = base64.b64decode(audio_base64)
-        logger.info(f" Audio processing: {len(audio_bytes)} bytes")
+        
+        # If confidence not provided, try to get from session
+        if confidence is None:
+            confidence = manager.session_confidence.get(device_id)
+
+        logger.info(f" Audio processing: {len(audio_bytes)} bytes (confidence: {confidence})")
 
         # Save audio file for debugging/processing
         timestamp = int(time.time())
-        audio_filename = f"recorded_{device_id}_{timestamp}.wav"
+        conf_str = f"conf{confidence:.2f}_" if confidence is not None else ""
+        audio_filename = f"{conf_str}recorded_{device_id}_{timestamp}.wav"
         audio_path = AUDIO_DIR / audio_filename
 
         # Write WAV header + PCM data
@@ -508,14 +524,16 @@ async def process_complete_audio(
 
         # Transcribe audio to text
         text = await transcribe_audio(audio_base64, audio_format)
-        logger.info(f"ASR result: {text}")
-
+        
         if not text:
+            logger.info(f"ASR result is empty (Silence/Noise), skipping intent parsing for {device_id}")
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
                 payload=PlayPayload(audio="not_understood.wav"),
             ).model_dump()
+            
+        logger.info(f"ASR result: {text}")
 
         # Parse intent with LLM
         intent = parse_intent_with_llm(text)
@@ -564,8 +582,8 @@ async def handle_audio_start(device_id: str, data: dict):
     """Signal clear buffer for new streaming session."""
     try:
         msg = AudioStreamStart(**data)
-        manager.clear_audio_buffer(device_id)
-        logger.info(f"Stream start: {device_id} expecting {msg.payload.total_samples}")
+        manager.clear_audio_buffer(device_id, confidence=msg.payload.confidence)
+        logger.info(f"Stream start: {device_id} expecting {msg.payload.total_samples}, confidence: {msg.payload.confidence}")
     except Exception as e:
         logger.error(f"Audio start error: {e}")
 
@@ -580,10 +598,17 @@ async def handle_audio_chunk(device_id: str, data: dict) -> Optional[dict]:
         if msg.payload.is_last:
             full_audio = manager.get_audio_data(device_id)
             full_audio_b64 = base64.b64encode(full_audio).decode("utf-8")
-            manager.clear_audio_buffer(device_id)
-            return await process_complete_audio(
-                device_id, full_audio_b64, "pcm_16k_16bit"
+            # Get confidence before clearing
+            confidence = manager.session_confidence.get(device_id)
+            
+            # Process first
+            result = await process_complete_audio(
+                device_id, full_audio_b64, "pcm_16k_16bit", confidence
             )
+            
+            # Then clear
+            manager.clear_audio_buffer(device_id)
+            return result
 
         return None
     except Exception as e:
