@@ -144,11 +144,18 @@ ESP32 會先發送 `audio_start` 訊息，告知伺服器即將開始音訊串�
   "type": "audio_start",
   "payload": {
     "audio_format": "pcm_16k_16bit",
-    "total_samples": 48000
+    "transfer_mode": "binary",  // 或 "base64"
+    "total_samples": 48000,
+    "confidence": 0.85
   }
 }
 ```
-隨後，ESP32 將音訊資料切割成多個 4KB (約 2048 採樣點) 的區塊，並以 Base64 編碼，分次發送 `audio_chunk` 訊息。
+
+隨後，ESP32 根據 `transfer_mode` 選擇傳輸方式：
+
+*   **Binary 模式 (推薦)**：ESP32 將原始 PCM 音訊直接以二進位訊框 (Binary Frame) 分塊傳送。伺服器累積位元組直到達標後自動處理。此模式節省 **33%** 頻寬且 CPU 開銷極低。
+*   **Base64 模式**：ESP32 將音訊切割成多個 4KB 的區塊，並以 Base64 編碼，分次發送 `audio_chunk` 訊息。
+
 ```json
 {
   "device_id": "esp32_01",
@@ -161,7 +168,7 @@ ESP32 會先發送 `audio_start` 訊息，告知伺服器即將開始音訊串�
   }
 }
 ```
-當 `is_last` 為 `true` 時，伺服器會將所有區塊組裝成完整的音訊檔進行 ASR 和 LLM 處理。
+當 `is_last` 為 `true` (或 Binary 模式下位元組達標) 時，伺服器會將所有區塊組裝成完整的音訊檔進行 ASR 和 LLM 處理。
 
 ### 6.2 Server → ESP32 (Action / Play)
 

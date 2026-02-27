@@ -22,7 +22,7 @@
 * [x] 整合至 esp-miao 母專案 (firmware/esp32_edge_impulse/)
 * [x] Build 驗證通過 (idf.py build)
 * [x] **WiFi 連線與 WebSocket 客戶端功能**
-* [x] **音訊串流傳輸 (Chunked Audio Streaming)**
+* [x] **音訊串流傳輸 (Chunked Audio Streaming - Base64 & Binary)**
 * [x] **接收伺服器指令並控制 GPIO**
 
 ## Server Side

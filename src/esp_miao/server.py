@@ -78,6 +78,8 @@ class ConnectionManager:
         self.pending_responses: dict[str, asyncio.Future] = {}
         self.audio_buffers: dict[str, bytearray] = {}  # Store chunked audio per device
         self.session_confidence: dict[str, float] = {}  # Store confidence per session
+        self.transfer_modes: dict[str, str] = {}  # "base64" or "binary"
+        self.expected_bytes: dict[str, int] = {}  # Expected total bytes for binary mode
 
     async def connect(self, device_id: str, websocket: WebSocket):
         await websocket.accept()
@@ -93,13 +95,18 @@ class ConnectionManager:
             del self.audio_buffers[device_id]
         if device_id in self.session_confidence:
             del self.session_confidence[device_id]
+        if device_id in self.transfer_modes:
+            del self.transfer_modes[device_id]
+        if device_id in self.expected_bytes:
+            del self.expected_bytes[device_id]
         # Cancel any pending futures
         if device_id in self.pending_responses:
             self.pending_responses[device_id].cancel()
             del self.pending_responses[device_id]
 
-    def clear_audio_buffer(self, device_id: str, confidence: Optional[float] = None):
-        """Clear the audio buffer for a device and set session confidence."""
+    def clear_audio_buffer(self, device_id: str, confidence: Optional[float] = None, 
+                           transfer_mode: str = "base64", total_samples: int = 0):
+        """Clear the audio buffer for a device and set session context."""
         if device_id in self.audio_buffers:
             self.audio_buffers[device_id] = bytearray()
         
@@ -107,8 +114,11 @@ class ConnectionManager:
             self.session_confidence[device_id] = confidence
         else:
             self.session_confidence.pop(device_id, None)
+
+        self.transfer_modes[device_id] = transfer_mode
+        self.expected_bytes[device_id] = total_samples * 2  # 16-bit = 2 bytes per sample
             
-        logger.debug(f"Cleared audio buffer for {device_id}, confidence: {confidence}")
+        logger.debug(f"Cleared audio buffer for {device_id}, mode: {transfer_mode}, expected: {self.expected_bytes[device_id]}")
 
     def append_audio_data(self, device_id: str, data: bytes):
         """Append data to the audio buffer for a device."""
@@ -620,8 +630,13 @@ async def handle_audio_start(device_id: str, data: dict):
     """Signal clear buffer for new streaming session."""
     try:
         msg = AudioStreamStart(**data)
-        manager.clear_audio_buffer(device_id, confidence=msg.payload.confidence)
-        logger.info(f"Stream start: {device_id} expecting {msg.payload.total_samples}, confidence: {msg.payload.confidence}")
+        manager.clear_audio_buffer(
+            device_id, 
+            confidence=msg.payload.confidence,
+            transfer_mode=msg.payload.transfer_mode,
+            total_samples=msg.payload.total_samples
+        )
+        logger.info(f"Stream start: {device_id} mode={msg.payload.transfer_mode}, total={msg.payload.total_samples}")
     except Exception as e:
         logger.error(f"Audio start error: {e}")
 
@@ -630,27 +645,41 @@ async def handle_audio_chunk(device_id: str, data: dict) -> Optional[dict]:
     """Receive chunk and process if is_last."""
     try:
         msg = AudioStreamChunk(**data)
+        # Verify transfer mode
+        if manager.transfer_modes.get(device_id) != "base64":
+            logger.warning(f"Received Base64 chunk for {device_id} but mode is {manager.transfer_modes.get(device_id)}")
+            
         chunk_data = base64.b64decode(msg.payload.data_base64)
         manager.append_audio_data(device_id, chunk_data)
 
         if msg.payload.is_last:
-            full_audio = manager.get_audio_data(device_id)
-            full_audio_b64 = base64.b64encode(full_audio).decode("utf-8")
-            # Get confidence before clearing
-            confidence = manager.session_confidence.get(device_id)
-            
-            # Process first
-            result = await process_complete_audio(
-                device_id, full_audio_b64, "pcm_16k_16bit", confidence
-            )
-            
-            # Then clear
-            manager.clear_audio_buffer(device_id)
-            return result
+            return await process_stream_end(device_id)
 
         return None
     except Exception as e:
         logger.error(f"Audio chunk error: {e}")
+        return None
+
+
+async def process_stream_end(device_id: str) -> Optional[dict]:
+    """Finalize and process audio buffer."""
+    try:
+        full_audio = manager.get_audio_data(device_id)
+        full_audio_b64 = base64.b64encode(full_audio).decode("utf-8")
+        # Get confidence before clearing
+        confidence = manager.session_confidence.get(device_id)
+        
+        # Process first
+        result = await process_complete_audio(
+            device_id, full_audio_b64, "pcm_16k_16bit", confidence
+        )
+        
+        # Then clear
+        manager.clear_audio_buffer(device_id)
+        return result
+    except Exception as e:
+        logger.error(f"Stream process error: {e}")
+        manager.clear_audio_buffer(device_id)
         return None
 
 
@@ -736,41 +765,77 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
 
     try:
         while True:
-            raw_msg = await websocket.receive_text()
-            logger.debug(f"Received from {device_id}: {raw_msg}")
+            # Receive either text or bytes
+            message = await websocket.receive()
+            
+            # Handle disconnection event
+            if message["type"] == "websocket.disconnect":
+                logger.info(f"Disconnect event for {device_id}")
+                break
 
-            try:
-                data = json.loads(raw_msg)
-                msg_type = data.get("type")
+            if "text" in message:
+                raw_msg = message["text"]
+                logger.debug(f"Received TEXT from {device_id}: {raw_msg}")
 
-                if msg_type == "command_request":
-                    response = await handle_command_request(device_id, data)
-                elif msg_type == "fallback_request":
-                    response = await handle_fallback_request(device_id, data)
-                elif msg_type == "audio_request":
-                    response = await handle_audio_request(device_id, data)
-                elif msg_type == "audio_start":
-                    await handle_audio_start(device_id, data)
-                    continue
-                elif msg_type == "audio_chunk":
-                    response = await handle_audio_chunk(device_id, data)
-                    if response is None:
+                try:
+                    data = json.loads(raw_msg)
+                    msg_type = data.get("type")
+
+                    response = None
+                    if msg_type == "command_request":
+                        response = await handle_command_request(device_id, data)
+                    elif msg_type == "fallback_request":
+                        response = await handle_fallback_request(device_id, data)
+                    elif msg_type == "audio_request":
+                        response = await handle_audio_request(device_id, data)
+                    elif msg_type == "audio_start":
+                        await handle_audio_start(device_id, data)
                         continue
-                elif msg_type == "action_result":
-                    logger.info(f"Action result from {device_id}: {data}")
-                    # Resolve pending future if waiting
-                    manager.resolve_pending(device_id, data)
-                    continue  # No response needed
-                else:
-                    logger.warning(f"Unknown message type: {msg_type}")
-                    continue
+                    elif msg_type == "audio_chunk":
+                        response = await handle_audio_chunk(device_id, data)
+                        if response is None:
+                            continue
+                    elif msg_type == "action_result":
+                        logger.info(f"Action result from {device_id}: {data}")
+                        manager.resolve_pending(device_id, data)
+                        continue
+                    else:
+                        logger.warning(f"Unknown message type: {msg_type}")
+                        continue
 
-                await websocket.send_text(json.dumps(response))
+                    if response:
+                        await websocket.send_text(json.dumps(response))
 
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error: {e}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON decode error: {e}")
+            
+            elif "bytes" in message:
+                chunk_data = message["bytes"]
+                logger.debug(f"Received BINARY from {device_id}: {len(chunk_data)} bytes")
+                
+                if manager.transfer_modes.get(device_id) != "binary":
+                    logger.warning(f"Received binary for {device_id} but mode is {manager.transfer_modes.get(device_id)}")
+                
+                manager.append_audio_data(device_id, chunk_data)
+                
+                # Check if we have received enough bytes
+                expected = manager.expected_bytes.get(device_id, 0)
+                current = len(manager.audio_buffers.get(device_id, []))
+                
+                if expected > 0 and current >= expected:
+                    logger.info(f"Binary stream complete for {device_id} ({current}/{expected} bytes)")
+                    response = await process_stream_end(device_id)
+                    if response:
+                        await websocket.send_text(json.dumps(response))
+            
+            else:
+                logger.debug(f"Ignored WebSocket message: {message.get('type')}")
 
     except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"WebSocket error in {device_id}: {e}")
+    finally:
         manager.disconnect(device_id)
 
 

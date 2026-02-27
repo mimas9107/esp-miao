@@ -44,7 +44,7 @@
 /* ---------- Configuration ---------- */
 
 // Removed hardcoded WIFI_SSID and WIFI_PASS, now from NVS/Kconfig
-#define SERVER_URL      "ws://192.168.1.16:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
+#define SERVER_URL      "ws://192.168.1.103:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
 
 #define LED_PIN         GPIO_NUM_2
 
@@ -291,6 +291,9 @@ static void init_websocket(void)
 #define AUDIO_SAMPLES_3S     (SAMPLE_RATE * RECORD_DURATION_SEC)
 #define AUDIO_BUFFER_SIZE_3S (AUDIO_SAMPLES_3S * sizeof(int16_t))
 
+// Set to 1 to test Binary Transfer, 0 for Base64
+#define USE_BINARY_STREAM    1
+
 /* ---------- Globals ---------- */
 
 static i2s_chan_handle_t rx_chan = NULL;
@@ -435,9 +438,9 @@ static bool read_audio_to_buffer(int16_t *out_buffer, size_t num_samples)
     return true;
 }
 
-/* ---------- Send Audio Stream via WebSocket (Chunked) ---------- */
+/* ---------- Send Audio Stream via WebSocket (Base64 Chunked) ---------- */
 
-static bool send_audio_stream(const int16_t *audio_data, size_t sample_count, float confidence)
+static bool send_audio_stream_b64(const int16_t *audio_data, size_t sample_count, float confidence)
 {
     if (!ws_client || !ws_connected) {
         ESP_LOGE(TAG, "WebSocket not connected");
@@ -447,7 +450,7 @@ static bool send_audio_stream(const int16_t *audio_data, size_t sample_count, fl
     // 1. Send audio_start
     char start_json[256];
     snprintf(start_json, sizeof(start_json), 
-             "{\"device_id\":\"esp32_01\",\"timestamp\":%lu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f}}",
+             "{\"device_id\":\"esp32_01\",\"timestamp\":%lu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f,\"transfer_mode\":\"base64\"}}",
              (unsigned long)xTaskGetTickCount(), sample_count, confidence);
     
     if (esp_websocket_client_send_text(ws_client, start_json, strlen(start_json), portMAX_DELAY) < 0) {
@@ -502,6 +505,47 @@ static bool send_audio_stream(const int16_t *audio_data, size_t sample_count, fl
     free(b64_buffer);
     free(json_buffer);
     
+    return (samples_sent >= sample_count);
+}
+
+/* ---------- Send Audio Stream via WebSocket (Binary Chunked) ---------- */
+
+static bool send_audio_stream_binary(const int16_t *audio_data, size_t sample_count, float confidence)
+{
+    if (!ws_client || !ws_connected) {
+        ESP_LOGE(TAG, "WebSocket not connected");
+        return false;
+    }
+
+    // 1. Send audio_start (JSON)
+    char start_json[256];
+    snprintf(start_json, sizeof(start_json), 
+             "{\"device_id\":\"esp32_01\",\"timestamp\":%lu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f,\"transfer_mode\":\"binary\"}}",
+             (unsigned long)xTaskGetTickCount(), sample_count, confidence);
+    
+    if (esp_websocket_client_send_text(ws_client, start_json, strlen(start_json), portMAX_DELAY) < 0) {
+        return false;
+    }
+
+    // 2. Send raw binary data in chunks
+    const size_t CHUNK_SAMPLES = 4096; // 8192 bytes per binary frame
+    size_t samples_sent = 0;
+
+    while (samples_sent < sample_count) {
+        size_t to_send = sample_count - samples_sent;
+        if (to_send > CHUNK_SAMPLES) to_send = CHUNK_SAMPLES;
+
+        if (esp_websocket_client_send_bin(ws_client, (const char *)(audio_data + samples_sent), 
+                                         to_send * sizeof(int16_t), portMAX_DELAY) < 0) {
+            ESP_LOGE(TAG, "Failed to send binary chunk");
+            break;
+        }
+
+        samples_sent += to_send;
+        // Binary transfer is faster, but a small delay helps stability
+        vTaskDelay(pdMS_TO_TICKS(5)); 
+    }
+
     return (samples_sent >= sample_count);
 }
 
@@ -618,9 +662,15 @@ static void inference_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(100));
             
             if (recording_complete && recording_samples > 0) {
-                printf(">>> WAV: Sending %zu samples via WebSocket (Streaming)...\r\n", recording_samples);
+                printf(">>> WAV: Sending %zu samples via WebSocket (%s)...\r\n", 
+                       recording_samples, USE_BINARY_STREAM ? "Binary" : "Base64 Streaming");
                 
-                bool sent = send_audio_stream(recording_buffer, recording_samples, detected_confidence);
+                bool sent = false;
+                if (USE_BINARY_STREAM) {
+                    sent = send_audio_stream_binary(recording_buffer, recording_samples, detected_confidence);
+                } else {
+                    sent = send_audio_stream_b64(recording_buffer, recording_samples, detected_confidence);
+                }
                 
                 if (sent) {
                     printf(">>> WAV: Sent successfully!\r\n");

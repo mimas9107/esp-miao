@@ -165,6 +165,7 @@ class AudioStreamStartPayload(BaseModel):
     """Payload to start a chunked audio stream."""
 
     audio_format: str = Field("pcm_16k_16bit", description="Audio format")
+    transfer_mode: Literal["base64", "binary"] = Field("base64", description="Streaming transfer mode")
     total_samples: int = Field(..., description="Total expected samples")
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Wake word confidence")
 

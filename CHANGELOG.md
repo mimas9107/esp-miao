@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-02-27
+
+### Added
+- **Binary Audio Streaming (二進位音訊串流)**
+  - 在 ESP32 韌體與 Server 端同步實作「純二進位」傳輸模式。
+  - 頻寬節省約 **33%**，並大幅降低 ESP32 的 CPU 與記憶體開銷（免去 Base64 編碼與 JSON 封裝）。
+  - 在 `audio_start` 協議中新增 `transfer_mode` 欄位以支援雙模式（`base64` 與 `binary`）。
+- **Protocol Flexibility**
+  - ESP32 韌體新增 `USE_BINARY_STREAM` 巨集，方便在不同環境下測試傳輸效能。
+
+### Fixed
+- **WebSocket Stability (Server-side)**
+  - 修復了 `RuntimeError: Cannot call "receive" once a disconnect message has been received` 錯誤。
+  - 正確處理 WebSocket 斷線事件訊息，確保伺服器在客戶端斷開後能平穩清理資源。
+
 ## [0.3.4] - 2026-02-26
 
 ### Optimized
