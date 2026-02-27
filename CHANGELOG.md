@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-02-27
+
+### Added
+- **Server-side Audio Playback (伺服器端音效播放)**
+  - 實作伺服器端本地播放功能，解決 ESP32 無喇叭硬體的問題。
+  - 使用系統 `aplay` 指令實現非阻塞（Non-blocking）音訊播放。
+  - 新增 `get_action_sound` 映射邏輯：
+    - 開燈 (`light` on) -> `lightopen.wav`
+    - 關燈 (`light` off) -> `lightclose.wav`
+    - 一般成功 -> `success.wav`
+    - 錯誤 -> `error.wav`
+    - 不理解 -> `not_understood.wav`
+- **Local Sound Directory**
+  - 音效檔存放路徑設為 `src/esp_miao/playsound/`。
+
 ## [0.3.5] - 2026-02-27
 
 ### Added

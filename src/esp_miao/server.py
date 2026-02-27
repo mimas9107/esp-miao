@@ -44,7 +44,38 @@ logger = logging.getLogger("esp-miao")
 
 # --- Configuration ---
 AUDIO_DIR = Path(__file__).parent / "audio"
+LOCAL_SOUND_DIR = Path(__file__).parent / "playsound"
 TIMEOUT_SECONDS = 10.0  # WebSocket response timeout
+
+
+async def play_local_sound(filename: str):
+    """Play a sound file locally on the server."""
+    if not filename:
+        return
+
+    sound_path = LOCAL_SOUND_DIR / filename
+    if not sound_path.exists():
+        logger.warning(f"Local sound file not found: {sound_path}")
+        return
+
+    try:
+        # Use aplay for WAV files. 
+        # Note: In a production server, you might want to run this in a thread or 
+        # use a more robust library, but subprocess is fine for a prototype.
+        logger.info(f"Playing local sound: {filename}")
+        import subprocess
+        subprocess.Popen(["aplay", str(sound_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        logger.error(f"Failed to play local sound {filename}: {e}")
+
+
+def get_action_sound(target: str, value: str) -> str:
+    """Determine the sound file to play based on the action target and value."""
+    if target == "light":
+        return "lightopen.wav" if value == "on" else "lightclose.wav"
+    
+    # Default success sound for other devices
+    return "success.wav"
 
 
 # --- Device Table ---
@@ -408,12 +439,14 @@ async def handle_command_request(device_id: str, data: dict) -> dict:
             is_valid, error = action_validator.validate("relay_set", target, value)
             if not is_valid:
                 logger.warning(f"Action validation failed: {error}")
+                await play_local_sound("error.wav")
                 return Play(
                     device_id=device_id,
                     timestamp=int(time.time() * 1000),
                     payload=PlayPayload(audio="error.wav"),
                 ).model_dump()
 
+            await play_local_sound(get_action_sound(target, value))
             return Action(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -421,11 +454,12 @@ async def handle_command_request(device_id: str, data: dict) -> dict:
                     action="relay_set",
                     target=target,
                     value=value,
-                    sound="success.wav",
+                    sound=get_action_sound(target, value),
                 ),
             ).model_dump()
         else:
             logger.warning(f"Unknown command ID: {cmd_id}")
+            await play_local_sound("error.wav")
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -455,6 +489,7 @@ async def handle_fallback_request(device_id: str, data: dict) -> dict:
 
         if not text:
             logger.warning("No text or audio in fallback request")
+            await play_local_sound("not_understood.wav")
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -465,6 +500,7 @@ async def handle_fallback_request(device_id: str, data: dict) -> dict:
         intent = parse_intent_with_llm(text)
 
         if intent.get("action") == "unknown":
+            await play_local_sound("not_understood.wav")
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -480,12 +516,14 @@ async def handle_fallback_request(device_id: str, data: dict) -> dict:
         if not is_valid:
             logger.warning(f"LLM action validation failed: {error}")
             # Fail-safe: return error instead of executing unsafe action
+            await play_local_sound("error.wav")
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
                 payload=PlayPayload(audio="error.wav"),
             ).model_dump()
 
+        await play_local_sound(get_action_sound(target, value))
         return Action(
             device_id=device_id,
             timestamp=int(time.time() * 1000),
@@ -493,7 +531,7 @@ async def handle_fallback_request(device_id: str, data: dict) -> dict:
                 action=action,
                 target=target,
                 value=value,
-                sound="success.wav",
+                sound=get_action_sound(target, value),
             ),
         ).model_dump()
 
@@ -575,6 +613,7 @@ async def process_complete_audio(
         
         if not text:
             logger.info(f"ASR result is empty (Silence/Noise), skipping intent parsing for {device_id}")
+            await play_local_sound("not_understood.wav")
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -587,6 +626,7 @@ async def process_complete_audio(
         intent = parse_intent_with_llm(text)
 
         if intent.get("action") == "unknown":
+            await play_local_sound("not_understood.wav")
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -600,12 +640,14 @@ async def process_complete_audio(
 
         is_valid, error = action_validator.validate(action, target, value)
         if not is_valid:
+            await play_local_sound("error.wav")
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
                 payload=PlayPayload(audio="error.wav"),
             ).model_dump()
 
+        await play_local_sound(get_action_sound(target, value))
         return Action(
             device_id=device_id,
             timestamp=int(time.time() * 1000),
@@ -613,7 +655,7 @@ async def process_complete_audio(
                 action=action,
                 target=target,
                 value=value,
-                sound="success.wav",
+                sound=get_action_sound(target, value),
             ),
         ).model_dump()
 

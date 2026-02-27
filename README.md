@@ -13,7 +13,8 @@ ESP32 負責語音感知與硬體控制，Server 負責語意理解與跨裝置�
 * 使用 Edge Impulse TFLite 模型進行本地喚醒詞推論。
 * 對於複雜語意交由 Server + Ollama LLM 解析。
 * 建立 JSON Protocol 作為事件傳遞格式。
-* 支援 relay、音效播放與未來 IoT 擴充。
+* 支援 Relay、伺服器端本地音效播放 (aplay) 與未來 IoT 擴充。
+* 提供特定動作音效對應（如開燈/關燈專屬音效）。
 
 ---
 
