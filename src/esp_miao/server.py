@@ -34,6 +34,14 @@ from .models import (
     ALLOWED_ACTIONS,
 )
 
+import uvicorn
+import paho.mqtt.client as mqtt
+import os
+from dotenv import load_dotenv
+
+# --- Load Environment Variables ---
+load_dotenv()
+
 # --- Logging setup ---
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +55,6 @@ AUDIO_DIR = Path(__file__).parent / "audio"
 LOCAL_SOUND_DIR = Path(__file__).parent / "playsound"
 TIMEOUT_SECONDS = 10.0  # WebSocket response timeout
 
-
 async def play_local_sound(filename: str):
     """Play a sound file locally on the server."""
     if not filename:
@@ -60,8 +67,6 @@ async def play_local_sound(filename: str):
 
     try:
         # Use aplay for WAV files. 
-        # Note: In a production server, you might want to run this in a thread or 
-        # use a more robust library, but subprocess is fine for a prototype.
         logger.info(f"Playing local sound: {filename}")
         import subprocess
         subprocess.Popen(["aplay", str(sound_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -77,15 +82,130 @@ def get_action_sound(target: str, value: str) -> str:
     # Default success sound for other devices
     return "success.wav"
 
+MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.1.16")
+MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
+MQTT_TOPIC = os.getenv("MQTT_TOPIC", "home/generic/command") # 改為更通用的主題
+MQTT_DISCOVERY_TOPIC = "home/discovery"
+MQTT_AUTH_USER = os.getenv("MQTT_AUTH_USER")
+MQTT_AUTH_PASSWORD = os.getenv("MQTT_AUTH_PASSWORD")
 
-# --- Device Table ---
-device_table = DeviceTable(
-    devices=[
-        Device(name="light", type="relay", gpio=26),
-        Device(name="fan", type="relay", gpio=27),
-        Device(name="led", type="led", gpio=2),
-    ]
-)
+# --- Device & Discovery Support ---
+class DynamicDeviceTable:
+    def __init__(self, devices: list[Device] = None):
+        self._devices: dict[str, Device] = {d.name: d for d in (devices or [])}
+        self._aliases: dict[str, str] = {} # alias -> device_name
+        self._update_aliases()
+
+    def _update_aliases(self):
+        """Rebuild alias map from current devices."""
+        self._aliases = {}
+        # Hardcoded defaults for backward compatibility
+        defaults = {
+            "light": ["燈", "電燈", "燈光", "lights", "light"],
+            "fan": ["風扇", "電風扇", "電扇", "fans", "fan", "風山"],
+            "led": ["led", "LED", "指示燈"],
+        }
+        for name, aliases in defaults.items():
+            for alias in aliases:
+                self._aliases[alias] = name
+        
+        # Add dynamic aliases from discovered devices
+        for dev in self._devices.values():
+            if dev.aliases:
+                for alias in dev.aliases:
+                    self._aliases[alias.lower()] = dev.name
+
+    def update_device(self, dev_info: dict):
+        """Register or update a device from MQTT discovery."""
+        name = dev_info.get("device_id")
+        if not name: return
+        
+        # Create Device object (Mapping discovery fields to Device model)
+        new_dev = Device(
+            name=name,
+            type=dev_info.get("device_type", "unknown"),
+            gpio=dev_info.get("gpio"), # 修正：若無則為 None，不再傳入 -1
+            aliases=dev_info.get("aliases", []),
+            control_topic=dev_info.get("control_topic", MQTT_TOPIC),
+            commands=dev_info.get("commands", {"on": "ON", "off": "OFF"})
+        )
+        self._devices[name] = new_dev
+        self._update_aliases()
+        logger.info(f"Device registered/updated: {name} ({new_dev.type})")
+
+    @property
+    def devices(self) -> list[Device]:
+        return list(self._devices.values())
+
+    @property
+    def alias_map(self) -> dict[str, str]:
+        return self._aliases
+
+    def get_device(self, name: str) -> Optional[Device]:
+        return self._devices.get(name)
+
+# Initialize with static defaults
+# 注意：為了向後相容 Board B 範例，我們將靜態 light 的 Topic 設為 "lamp/command"
+# 其餘設備改用專屬 Topic 避免衝突
+device_table = DynamicDeviceTable(devices=[
+    Device(name="light", type="relay", gpio=26, control_topic="lamp/command"),
+    Device(name="fan", type="relay", gpio=27, control_topic="home/fan/command"),
+    Device(name="led", type="led", gpio=2, control_topic="home/led/command"),
+])
+
+# --- MQTT Setup ---
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+
+if MQTT_AUTH_USER and MQTT_AUTH_PASSWORD:
+    mqtt_client.username_pw_set(MQTT_AUTH_USER, MQTT_AUTH_PASSWORD)
+
+def on_connect(client, userdata, flags, rc, properties):
+    if rc == 0:
+        logger.info("Connected to MQTT Broker!")
+        client.subscribe(MQTT_DISCOVERY_TOPIC)
+        logger.info(f"Subscribed to discovery topic: {MQTT_DISCOVERY_TOPIC}")
+    else:
+        logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
+
+def on_message(client, userdata, msg):
+    if msg.topic == MQTT_DISCOVERY_TOPIC:
+        try:
+            payload = json.loads(msg.payload.decode())
+            device_table.update_device(payload)
+        except Exception as e:
+            logger.error(f"Error parsing discovery payload: {e}")
+
+mqtt_client.on_connect = on_connect
+mqtt_client.on_message = on_message
+
+try:
+    logger.info(f"Connecting to MQTT Broker at {MQTT_BROKER}...")
+    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    mqtt_client.loop_start()
+except Exception as e:
+    logger.error(f"MQTT Connection Error: {e}")
+
+def publish_mqtt_command(target: str, value: str):
+    """查表式發送 MQTT 指令，支援動態 Topic 與 Payload。"""
+    device = device_table.get_device(target)
+    if not device:
+        logger.warning(f"Attempted to control unregistered device: {target}")
+        return
+
+    # 獲取該裝置設定的 Topic 與指令映射
+    # Pydantic 物件屬性若為 None 時，getattr 會拿到 None 而不觸發預設值
+    topic = device.control_topic if device.control_topic else MQTT_TOPIC
+    commands = device.commands if device.commands else {"on": "ON", "off": "OFF"}
+    cmd_payload = commands.get(value.lower(), value.upper())
+
+    try:
+        result = mqtt_client.publish(topic, cmd_payload)
+        if result.rc == 0:
+            logger.info(f"MQTT Publish: [{topic}] -> {cmd_payload} (for {target})")
+        else:
+            logger.error(f"Failed to publish MQTT command for {target} (rc={result.rc})")
+    except Exception as e:
+        logger.error(f"MQTT Publish Error for {target}: {e}")
 
 # --- Action Validator (Safety) ---
 action_validator = ActionValidator(device_table)
@@ -311,14 +431,7 @@ async def transcribe_audio(
 
 # --- LLM Intent Parsing ---
 
-# 裝置別名映射（支援使用者各種說法）
-DEVICE_ALIASES: dict[str, list[str]] = {
-    "light": ["燈", "電燈", "燈光", "lights", "light"],
-    "fan": ["風扇", "電風扇", "電扇", "fans", "fan"],
-    "led": ["led", "LED", "指示燈"],
-}
-
-# 動作關鍵字
+# 動作關鍵字 (全局共通)
 ACTION_KEYWORDS: dict[str, list[str]] = {
     "on": ["開", "打開", "開啟", "啟動", "turn on", "on", "open", "kaitan"],
     "off": ["關", "關閉", "關掉", "停止", "turn off", "off", "close", "kuan teng"],
@@ -327,26 +440,22 @@ ACTION_KEYWORDS: dict[str, list[str]] = {
 
 def extract_intent_from_text(text: str) -> dict:
     """
-    使用關鍵字匹配從文字中提取意圖。
-    這是 LLM 的後備方案，確保即使 LLM 回傳錯誤結果也能正確處理。
+    使用從 DeviceRegistry 獲取的動態別名地圖進行匹配。
     """
-    text_lower = text.lower()
+    text_lower = text.replace(" ", "").lower()
 
-    # 找出目標裝置
+    # 找出目標裝置 (動態查詢 alias_map)
     target = None
-    for device_name, aliases in DEVICE_ALIASES.items():
-        for alias in aliases:
-            if alias in text or alias.lower() in text_lower:
-                target = device_name
-                break
-        if target:
+    for alias, device_name in device_table.alias_map.items():
+        if alias in text_lower:
+            target = device_name
             break
 
     # 找出動作
     value = None
     for action_value, keywords in ACTION_KEYWORDS.items():
         for keyword in keywords:
-            if keyword in text or keyword.lower() in text_lower:
+            if keyword in text_lower:
                 value = action_value
                 break
         if value:
@@ -354,33 +463,34 @@ def extract_intent_from_text(text: str) -> dict:
 
     if target and value:
         return {"action": "relay_set", "target": target, "value": value}
+    
+    # 特殊處理：只有裝置但沒動作
+    if target:
+        return {"action": "unknown", "target": target, "value": ""}
 
     return {"action": "unknown", "target": "", "value": ""}
 
 
 def parse_intent_with_llm(text: str) -> dict:
-    """Use Ollama LLM to parse natural language intent with fallback validation."""
-    device_names = [d.name for d in device_table.devices]
+    """Use Ollama LLM to parse natural language intent with dynamic device list."""
+    current_devices = [d.name for d in device_table.devices]
 
     # 先用關鍵字匹配提取意圖（作為驗證基準）
     keyword_intent = extract_intent_from_text(text)
     logger.debug(f"Keyword extraction: {text} -> {keyword_intent}")
     
-    # 方案 A: 關鍵字攔截層 (Keyword Pre-filter)
-    # 如果內容完全沒提到裝置也沒有動作，不送 LLM，直接回傳 unknown
-    if keyword_intent["action"] == "unknown":
-        logger.info(f"Pre-filter: No keywords found in '{text}', skipping LLM.")
+    # 方案 A: 關鍵字攔截層
+    if keyword_intent["target"] == "" and keyword_intent["action"] == "unknown":
+        logger.info(f"Pre-filter: No devices found in '{text}', skipping LLM.")
         return keyword_intent
 
-    # 方案 B: 優化 LLM Prompt
+    # 方案 B: 動態 LLM Prompt
     prompt = f"""Task: Convert voice command to JSON.
-Available devices: {device_names}
+Available devices: {current_devices}
 
 Examples:
 - Command: "幫我開燈" -> {{"action": "relay_set", "target": "light", "value": "on"}}
 - Command: "關掉風扇" -> {{"action": "relay_set", "target": "fan", "value": "off"}}
-- Command: "哈哈笑" -> {{"action": "unknown", "target": "", "value": ""}}
-- Command: "哎呀乖乖" -> {{"action": "unknown", "target": "", "value": ""}}
 
 Command: "{text}"
 Response in ONE LINE JSON format ONLY:
@@ -391,14 +501,7 @@ Response in ONE LINE JSON format ONLY:
         result_text = response["response"]
 
         # Extract JSON from response
-        if "```json" in result_text:
-            result_text = result_text.split("```json")[1].split("```")[0]
-        elif "```" in result_text:
-            result_text = result_text.split("```")[1].split("```")[0]
-
-        # 找出 JSON 部分
         import re
-
         json_match = re.search(r"\{[^}]+\}", result_text)
         if json_match:
             result_text = json_match.group()
@@ -406,12 +509,12 @@ Response in ONE LINE JSON format ONLY:
         result = json.loads(result_text.strip())
         logger.info(f"LLM parsed: {text} -> {result}")
 
-        # 驗證邏輯：如果 LLM 結果無效，使用關鍵字結果
-        if result.get("target") not in device_names or result.get("value") not in ["on", "off"]:
-            logger.warning(f"LLM output invalid, falling back to keywords")
+        # 驗證邏輯：如果 LLM 回報無效裝置，使用關鍵字結果
+        if result.get("target") not in current_devices or result.get("value") not in ["on", "off"]:
+            logger.warning(f"LLM output invalid device or value, falling back to keywords")
             return keyword_intent
             
-        # 交叉驗證：如果關鍵字能精確識別出 target/value 但與 LLM 不同，以關鍵字為主
+        # 交叉驗證：以關鍵字匹配結果為準（如果存在）
         if keyword_intent["action"] != "unknown":
             if result.get("target") != keyword_intent["target"] or result.get("value") != keyword_intent["value"]:
                 logger.warning(f"LLM disagreed with keywords, prioritizing keywords: {keyword_intent}")
@@ -447,6 +550,7 @@ async def handle_command_request(device_id: str, data: dict) -> dict:
                 ).model_dump()
 
             await play_local_sound(get_action_sound(target, value))
+            publish_mqtt_command(target, value)
             return Action(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -524,6 +628,7 @@ async def handle_fallback_request(device_id: str, data: dict) -> dict:
             ).model_dump()
 
         await play_local_sound(get_action_sound(target, value))
+        publish_mqtt_command(target, value)
         return Action(
             device_id=device_id,
             timestamp=int(time.time() * 1000),
@@ -648,6 +753,7 @@ async def process_complete_audio(
             ).model_dump()
 
         await play_local_sound(get_action_sound(target, value))
+        publish_mqtt_command(target, value)
         return Action(
             device_id=device_id,
             timestamp=int(time.time() * 1000),

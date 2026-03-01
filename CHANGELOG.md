@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-03-01
+
+### Fixed
+- **Pydantic Validation (GPIO Whitelist)**
+  - 修正了 `DynamicDeviceTable` 在處理無 GPIO 欄位的 MQTT 裝置時，誤傳 `-1` 導致觸發白名單驗證失敗的問題。現在 `gpio` 預設為 `None`，符合遠端裝置定義。
+- **MQTT Topic Fallback Logic**
+  - 修正了 `publish_mqtt_command` 在處理 Pydantic 模型屬性為 `None` 時，無法正確觸發 `getattr` 預設值的 Bug。現在實作了明確的 `if-else` 檢查，確保 `Invalid topic` 錯誤不再發生。
+- **Topic Collision (主題衝突)**
+  - 修正了靜態裝置 (`light`, `fan`, `led`) 全數擠在同一個預設主題 `"lamp/command"` 的問題。現在為每個靜態裝置分配了獨立的 `control_topic`：
+    - `light` -> `lamp/command`
+    - `fan` -> `home/fan/command`
+    - `led` -> `home/led/command`
+- **LLM Intent Correction (意圖校正)**
+  - 優化了 `parse_intent_with_llm` 的交叉驗證邏輯。當小型 LLM (0.5b) 生成非標準動作（如 `toggle_set`）或錯誤值時，系統能精確 Fallback 回關鍵字比對結果。
+
+### Added
+- **Sub-project: mqtt_for_esp32 (Arduino)**
+  - 完成子專案整合，實作 `sendDiscoveryMessage()`。裝置在連線 MQTT 後會自動發送「自我介紹」JSON，實現隨插即用。
+  - 更新子專案 `README.md`，提供完整的 Discovery 部署教學。
+
+## [0.4.0] - 2026-03-01
+
+### Added
+- **Device Dynamic Registration (MQTT Discovery System)**
+  - 實作伺服器端 `DynamicDeviceTable`，擺脫硬編碼裝置 (Hardcoded Devices) 模式。
+  - 伺服器啟動後自動訂閱 `home/discovery`，支援隨插即用 (Plug & Play) 的裝置擴充。
+  - 支援裝置自定義控制 Topic、指令 Payload 與語音別名 (Aliases)。
+- **MQTT Broker Integration**
+  - 整合 `paho-mqtt` 作為通訊中樞。
+  - 支援 `.env` 配置：`MQTT_BROKER`, `MQTT_AUTH_USER`, `MQTT_AUTH_PASSWORD` 等環境變數。
+  - 重構 `publish_mqtt_command` 為查表式發布，自動根據註冊表尋址。
+- **Dynamic LLM Prompt Generation**
+  - LLM 的 `Available devices` 列表現在會根據當前在線且已註冊的裝置動態生成。
+  - 顯著提高 LLM 在多裝置環境下的解析精確度。
+- **ASR & Intent Optimization**
+  - 強化 `extract_intent_from_text`：使用動態別名地圖匹配，並自動處理空白與大小寫，提升後備機制 (Fallback) 的成功率。
+  - 實作更嚴格的重複幻聽過濾器，解決特定環境下的 Whisper 幻聽問題。
+- **Control Board Template**
+  - 併入 `mqtt_for_esp32/` 專案，提供 Arduino 版本的終端裝置範本，包含自動註冊 (Discovery) 邏輯。
+
+### Changed
+- **Architectural Realignment (架構重定位)**
+  - **ESP32 (Wake Word)**：職責純化為「喚醒詞辨識 + 錄音傳送」，不再負責發送 MQTT 指令，確保邊緣端資源最大化利用。
+  - **Server**：確立為「決策中樞」，負責所有 MQTT 指令的發布與邏輯判斷。
+- **Model Updates**
+  - `Device` Pydantic 模型升級：`gpio` 改為選填，新增 `aliases`, `control_topic`, `commands` 等欄位以支援異質設備。
+
 ## [0.3.6] - 2026-02-27
 
 ### Added

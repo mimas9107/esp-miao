@@ -9,6 +9,7 @@ dependencies = [
     "faster-whisper>=1.2.1",
     "matplotlib>=3.10.8",
     "ollama>=0.6.1",
+    "paho-mqtt>=2.1.0",
     "pillow>=12.1.0",
     "python-dotenv>=1.2.1",
     "uvicorn>=0.40.0",

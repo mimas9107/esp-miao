@@ -253,14 +253,17 @@ class Device(BaseModel):
     """Device definition in device table."""
 
     name: str = Field(..., description="Device name")
-    type: Literal["relay", "led", "sensor"] = Field(..., description="Device type")
-    gpio: int = Field(..., description="GPIO pin number")
+    type: str = Field(..., description="Device type (relay, led, sensor, etc.)")
+    gpio: Optional[int] = Field(None, description="GPIO pin number (optional for MQTT devices)")
+    aliases: list[str] = Field(default_factory=list, description="Alternative names for voice recognition")
+    control_topic: Optional[str] = Field(None, description="MQTT topic for control")
+    commands: dict[str, str] = Field(default_factory=dict, description="Map action value to MQTT payload")
 
     @field_validator("gpio")
     @classmethod
-    def validate_gpio_whitelist(cls, v: int) -> int:
-        """Validate GPIO is in whitelist for safety."""
-        if v not in GPIO_WHITELIST:
+    def validate_gpio_whitelist(cls, v: Optional[int]) -> Optional[int]:
+        """Validate GPIO is in whitelist for safety if provided."""
+        if v is not None and v not in GPIO_WHITELIST:
             raise ValueError(f"GPIO {v} not in whitelist: {sorted(GPIO_WHITELIST)}")
         return v
 

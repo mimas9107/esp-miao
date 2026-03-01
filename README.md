@@ -25,31 +25,61 @@ User
  ↓
 Mic (INMP441) → ESP32 (Edge Impulse)
                  ├─ MFCC Feature Extraction
-                 ├─ TFLite Inference (heymiaomiao / noise / unknown)
+                 ├─ TFLite Inference (heymiaomiao)
                  ├─ RMS VAD Gate
-                 ├─ WiFi & WebSocket Client
-                 └─ Audio Streamer (Chunked, Base64)
+                 └─ Audio Streamer (Binary / Base64)
                       ↓
                    Server (Python FastAPI)
                      ├─ WebSocket Handler & Audio Reassembler
                      ├─ ASR (faster-whisper)
-                     ├─ LLM Intent Parser (Ollama, Keyword Fallback)
-                     ├─ Device Table Manager
-                     └─ Action Dispatcher
+                     ├─ LLM Intent Parser (Ollama, Dynamic Prompt)
+                     ├─ Device Dynamic Registry (Discovery Listener)
+                     └─ MQTT Dispatcher (paho-mqtt)
                       ↓
-                   ESP32 (GPIO Control)
-                     ├─ JSON Command Parser
-                     └─ GPIO Control (Relay, LED)
+               ┌──────┴──────┐
+        Board A (GPIO)   Board B/C (MQTT)
+         (Local Relay)    (Smart Light/Fan)
 ```
 
 設計原則：
 
-* ESP32 只做即時、低延遲、與自身硬體相關的任務。
-* Server 處理語意、跨裝置、策略與安全。
+* **ESP32 (Wake Word)**: 專注於即時感官任務與音訊傳輸，資源利用最大化。
+* **Server (Gateway)**: 承擔語意解析、決策制訂與跨裝置協議翻譯 (WebSocket to MQTT)。
+* **Control Board**: 以隨插即用 (Plug & Play) 模式註冊並執行指令。
 
 ---
 
-## 3. Hardware
+## 3. Device Discovery & MQTT Protocol (NEW v0.4.1)
+
+本系統採 **「隨插即用 (Plug & Play)」** 架構。伺服器會動態建立語音控制地圖，您僅需撰寫終端設備 (Actuators) 的註冊代碼。
+
+### 3.1 註冊規範 (Discovery JSON Schema)
+任何新加入的 MQTT 控制板，應在連線後對 Topic: `home/discovery` 發送以下 JSON：
+
+```json
+{
+  "device_id": "fan_kitchen",        // [必要] 伺服器識別用 ID (不可重複)
+  "device_type": "relay",           // [必要] 設備類型 (目前支援: relay, led, sensor)
+  "aliases": ["風扇", "抽風機"],      // [必要] 使用者會說出的別名 (語音辨識關鍵字)
+  "control_topic": "home/fan/cmd",   // [選填] 此裝置接收指令的主題 (預設為通用主題)
+  "commands": {                      // [選填] 動作值到 MQTT Payload 的對應
+    "on": "FAN_ON",
+    "off": "FAN_OFF"
+  }
+}
+```
+
+### 3.2 運作機制
+1. **Server 監聽**：伺服器啟動後訂閱 `home/discovery`。
+2. **自動映射**：伺服器收到 JSON 後，會自動將 `aliases` 填入語音解析地圖，並通知 LLM 現在有新設備 `fan_kitchen` 可供調度。
+3. **無縫控制**：當您對著喚醒板說「嘿喵喵，打開抽風機」，伺服器會解析出目標為 `fan_kitchen` 並向 `home/fan/cmd` 發布 `"FAN_ON"`。
+
+### 3.3 範例參考
+*   **Arduino 版**：請參考 `./mqtt_for_esp32/` 子專案中的範例代碼，已內建 `sendDiscoveryMessage()` 實作。
+
+---
+
+## 4. Hardware
 
 ### 3.1 硬體需求
 
