@@ -1,3 +1,9 @@
+# specification
+本專案為一個基於 ESP32 的智慧語音控制系統，主要功能為透過語音喚醒詞 "heymiaomiao" 觸發後，將音訊傳送至伺服器進行語音辨識與意圖解析,並透過 MQTT 指令控制燈光.本專案採用 C/C++/python 開發，並使用 ESP-IDF 作為開發框架.
+
+# constraints
+* 請參考 SPEC.md 規格精神進行開發.
+
 # environment
 本專案以 uv為主要套件與環境管理,
 本專案的 firmware/esp32_edge_impulse/ 是主要喚醒詞接收核心, 利用 esp idf 環境 結合 edge impulse mfcc模型開發.

@@ -8,6 +8,10 @@ from typing import Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 
 
+import logging
+
+logger = logging.getLogger("esp-miao.models")
+
 # --- ESP32 State Machine (SPEC.md 2.1) ---
 
 
@@ -302,7 +306,9 @@ class ActionValidator:
         """
         # Check action type
         if action not in ALLOWED_ACTIONS:
-            return False, f"Action '{action}' not allowed. Use: {ALLOWED_ACTIONS}"
+            msg = f"Action '{action}' not allowed. Use: {ALLOWED_ACTIONS}"
+            logger.warning(f"Validation Error: {msg}")
+            return False, msg
 
         # noop is always valid
         if action == "noop":
@@ -311,11 +317,15 @@ class ActionValidator:
         # Check target exists
         device = self.device_table.get_device(target)
         if device is None:
-            return False, f"Unknown target device: {target}"
+            msg = f"Unknown target device: {target}"
+            logger.warning(f"Validation Error: {msg}")
+            return False, msg
 
         # Check value
         if action in ("relay_set", "led_set") and value not in ALLOWED_VALUES:
-            return False, f"Value '{value}' not allowed. Use: {ALLOWED_VALUES}"
+            msg = f"Value '{value}' not allowed. Use: {ALLOWED_VALUES}"
+            logger.warning(f"Validation Error: {msg}")
+            return False, msg
 
         return True, ""
 
