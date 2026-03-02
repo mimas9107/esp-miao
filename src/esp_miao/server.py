@@ -178,13 +178,6 @@ def on_message(client, userdata, msg):
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
-try:
-    logger.info(f"Connecting to MQTT Broker at {MQTT_BROKER}...")
-    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    mqtt_client.loop_start()
-except Exception as e:
-    logger.error(f"MQTT Connection Error: {e}")
-
 def publish_mqtt_command(target: str, value: str):
     """查表式發送 MQTT 指令，支援動態 Topic 與 Payload。"""
     device = device_table.get_device(target)
@@ -347,82 +340,60 @@ async def transcribe_audio(
         # Decode base64 to bytes
         audio_bytes = base64.b64decode(audio_base64)
         
-        # Load audio data as a stream
-        # Faster-whisper can take a file path or a binary stream
-        # Note: it needs to know the format if it's raw PCM
-        # Since faster-whisper/ctranslate2 usually expects a file with header or 
-        # numpy array, we might need to wrap it.
+        # 使用 io.BytesIO 在記憶體中建立 WAV 格式資料，避免磁碟 I/O
+        from struct import pack
+        wav_buf = io.BytesIO()
+        sample_rate = 16000
+        bits_per_sample = 16
+        channels = 1
+        data_size = len(audio_bytes)
         
-        # For simplicity, we'll use the temporary WAV file approach if direct stream fails
-        # but let's try passing the bytes through io.BytesIO
-        
-        # Actually, let's use a temporary file to be safe with formats
-        import tempfile
-        import os
-        
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            # Write simple WAV header
-            from struct import pack
-            sample_rate = 16000
-            bits_per_sample = 16
-            channels = 1
-            data_size = len(audio_bytes)
-            
-            tmp.write(b"RIFF")
-            tmp.write(pack("<I", 36 + data_size))
-            tmp.write(b"WAVE")
-            tmp.write(b"fmt ")
-            tmp.write(pack("<I", 16))
-            tmp.write(pack("<H", 1))
-            tmp.write(pack("<H", channels))
-            tmp.write(pack("<I", sample_rate))
-            tmp.write(pack("<I", sample_rate * channels * (bits_per_sample // 8)))
-            tmp.write(pack("<H", channels * (bits_per_sample // 8)))
-            tmp.write(pack("<H", bits_per_sample))
-            tmp.write(b"data")
-            tmp.write(pack("<I", data_size))
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
+        wav_buf.write(b"RIFF")
+        wav_buf.write(pack("<I", 36 + data_size))
+        wav_buf.write(b"WAVE")
+        wav_buf.write(b"fmt ")
+        wav_buf.write(pack("<I", 16))
+        wav_buf.write(pack("<H", 1))
+        wav_buf.write(pack("<H", channels))
+        wav_buf.write(pack("<I", sample_rate))
+        wav_buf.write(pack("<I", sample_rate * channels * (bits_per_sample // 8)))
+        wav_buf.write(pack("<H", channels * (bits_per_sample // 8)))
+        wav_buf.write(pack("<H", bits_per_sample))
+        wav_buf.write(b"data")
+        wav_buf.write(pack("<I", data_size))
+        wav_buf.write(audio_bytes)
+        wav_buf.seek(0)
 
-        try:
-            # Force language to 'zh' (Chinese) for better accuracy in this context
+        # 定義阻塞推論的同步函式
+        def run_transcription():
             segments, info = whisper_model.transcribe(
-                tmp_path, 
-                beam_size=5, 
+                wav_buf, 
+                beam_size=3, # 優化：縮小 beam_size 換取速度
                 language="zh",
                 no_speech_threshold=0.6,
                 log_prob_threshold=-1.0
             )
             
             text_segments = []
-            import re
-            
             for segment in segments:
-                # 檢查每個片段的無聲機率
                 if segment.no_speech_prob < 0.7:
-                    # 強化重複幻聽模式過濾 (例如 "哈哈哈哈" 或 "我認識了我認識了")
                     clean_text = segment.text.strip()
-                    # 只要長度大於等於 4 且有明顯重複模式就攔截
+                    # 幻聽攔截邏輯保持不變
                     if len(clean_text) >= 4:
-                        # 檢查後半段是否重複前半段
                         half = len(clean_text) // 2
                         if clean_text[:half] == clean_text[half:]:
-                            logger.info(f"Filtered out repetitive hallucination: '{clean_text}'")
                             continue
-                        # 檢查連續四個字是否相同 (如 "哈哈哈哈")
-                        if len(clean_text) >= 4 and all(c == clean_text[0] for c in clean_text[:4]):
-                            logger.info(f"Filtered out repetitive character hallucination: '{clean_text}'")
+                        if all(c == clean_text[0] for c in clean_text[:4]):
                             continue
                     text_segments.append(clean_text)
-                else:
-                    logger.info(f"Filtered out hallucination segment: '{segment.text}' (no_speech_prob: {segment.no_speech_prob:.2f})")
-            
-            text = "".join(text_segments).strip()
+            return "".join(text_segments).strip(), info
+
+        # 使用 asyncio.to_thread 非同步執行阻塞式的 Whisper 推論
+        text, info = await asyncio.to_thread(run_transcription)
+        
+        if text:
             logger.info(f"ASR (Whisper) [{info.language}]: {text}")
-            return text
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+        return text
 
     except Exception as e:
         logger.error(f"ASR error: {e}")
@@ -479,7 +450,13 @@ def parse_intent_with_llm(text: str) -> dict:
     keyword_intent = extract_intent_from_text(text)
     logger.debug(f"Keyword extraction: {text} -> {keyword_intent}")
     
-    # 方案 A: 關鍵字攔截層
+    # --- 優先攔截邏輯 (Priority Logic) ---
+    # 如果關鍵字已經能明確識別出目標與動作，直接返回，跳過 LLM 以降低延遲
+    if keyword_intent["action"] != "unknown" and keyword_intent["target"] in current_devices:
+        logger.info(f"Priority Logic: Keyword match successful for '{text}', skipping LLM.")
+        return keyword_intent
+
+    # 如果內容完全沒提到裝置名稱且關鍵字解析失敗，不送 LLM，直接回傳 unknown
     if keyword_intent["target"] == "" and keyword_intent["action"] == "unknown":
         logger.info(f"Pre-filter: No devices found in '{text}', skipping LLM.")
         return keyword_intent
@@ -671,7 +648,7 @@ async def process_complete_audio(
 ) -> dict:
     """Core audio processing pipeline (ASR + LLM)."""
     try:
-        # Decode base64 audio and save to file
+        # Decode base64 audio
         audio_bytes = base64.b64decode(audio_base64)
         
         # If confidence not provided, try to get from session
@@ -680,40 +657,39 @@ async def process_complete_audio(
 
         logger.info(f" Audio processing: {len(audio_bytes)} bytes (confidence: {confidence})")
 
-        # Save audio file for debugging/processing
-        timestamp = int(time.time())
-        conf_str = f"conf{confidence:.2f}_" if confidence is not None else ""
-        audio_filename = f"{conf_str}recorded_{device_id}_{timestamp}.wav"
-        audio_path = AUDIO_DIR / audio_filename
+        # --- 背景儲存邏輯 (Background Storage) ---
+        def save_audio_file():
+            try:
+                timestamp = int(time.time())
+                conf_str = f"conf{confidence:.2f}_" if confidence is not None else ""
+                audio_filename = f"{conf_str}recorded_{device_id}_{timestamp}.wav"
+                audio_path = AUDIO_DIR / audio_filename
 
-        # Write WAV header + PCM data
-        from struct import pack
+                from struct import pack
+                with open(audio_path, "wb") as f:
+                    data_size = len(audio_bytes)
+                    f.write(b"RIFF")
+                    f.write(pack("<I", 36 + data_size))
+                    f.write(b"WAVE")
+                    f.write(b"fmt ")
+                    f.write(pack("<I", 16))
+                    f.write(pack("<H", 1))
+                    f.write(pack("<H", 1)) # mono
+                    f.write(pack("<I", 16000)) # 16kHz
+                    f.write(pack("<I", 16000 * 2)) # byte rate
+                    f.write(pack("<H", 2)) # block align
+                    f.write(pack("<H", 16)) # 16-bit
+                    f.write(b"data")
+                    f.write(pack("<I", data_size))
+                    f.write(audio_bytes)
+                logger.debug(f"Audio debug file saved: {audio_path}")
+            except Exception as e:
+                logger.error(f"Failed to save debug audio: {e}")
 
-        with open(audio_path, "wb") as f:
-            sample_rate = 16000
-            bits_per_sample = 16
-            channels = 1
-            data_size = len(audio_bytes)
-            file_size = 44 + data_size
+        # 使用 asyncio.to_thread 在背景儲存，不阻塞主流程
+        asyncio.create_task(asyncio.to_thread(save_audio_file))
 
-            f.write(b"RIFF")
-            f.write(pack("<I", file_size - 8))
-            f.write(b"WAVE")
-            f.write(b"fmt ")
-            f.write(pack("<I", 16))
-            f.write(pack("<H", 1))
-            f.write(pack("<H", channels))
-            f.write(pack("<I", sample_rate))
-            f.write(pack("<I", sample_rate * channels * (bits_per_sample // 8)))
-            f.write(pack("<H", channels * (bits_per_sample // 8)))
-            f.write(pack("<H", bits_per_sample))
-            f.write(b"data")
-            f.write(pack("<I", data_size))
-            f.write(audio_bytes)
-
-        logger.info(f"Audio saved to: {audio_path}")
-
-        # Transcribe audio to text
+        # --- 啟動 ASR (Faster-Whisper) ---
         text = await transcribe_audio(audio_base64, audio_format)
         
         if not text:
@@ -727,7 +703,7 @@ async def process_complete_audio(
             
         logger.info(f"ASR result: {text}")
 
-        # Parse intent with LLM
+        # Parse intent with LLM (Will fallback to Keywords if clear match)
         intent = parse_intent_with_llm(text)
 
         if intent.get("action") == "unknown":
@@ -837,6 +813,14 @@ async def lifespan(app: FastAPI):
     global whisper_model
     logger.info("ESP-MIAO Server starting...")
     
+    # Initialize MQTT
+    try:
+        logger.info(f"Connecting to MQTT Broker at {MQTT_BROKER}...")
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+    except Exception as e:
+        logger.error(f"MQTT Connection Error: {e}")
+
     # Initialize Whisper
     try:
         logger.info("Initializing Whisper model (base, cpu)...")
@@ -849,8 +833,14 @@ async def lifespan(app: FastAPI):
     logger.info(f"Allowed actions: {ALLOWED_ACTIONS}")
     # Ensure audio directory exists
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    
     yield
+    
     logger.info("ESP-MIAO Server shutting down...")
+    # Gracefully stop MQTT
+    mqtt_client.loop_stop()
+    mqtt_client.disconnect()
+    logger.info("MQTT client stopped.")
 
 
 app = FastAPI(
@@ -884,6 +874,16 @@ async def get_device(device_name: str):
     if device is None:
         raise HTTPException(status_code=404, detail=f"Device not found: {device_name}")
     return device.model_dump()
+
+
+@app.get("/shutdown")
+async def shutdown():
+    """優雅地關閉伺服器。"""
+    logger.info("Shutdown requested via API...")
+    import os
+    import signal
+    os.kill(os.getpid(), signal.SIGINT)
+    return {"status": "shutting down"}
 
 
 # --- Feedback Audio API ---

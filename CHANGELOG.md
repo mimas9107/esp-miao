@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-03-02
+
+### Added
+- **Graceful Shutdown API**
+  - 新增 `/shutdown` 端點，允許透過 HTTP 請求觸發伺服器安全關閉。
+- **Lifecycle Management (lifespan)**
+  - 整合 FastAPI `lifespan` 機制，將 MQTT 連線與 Whisper 模型初始化集中管理。
+  - 確保伺服器關閉時主動停止 MQTT 迴圈 (`loop_stop`) 並中斷連線，解決了中斷時的資源洩漏 (Semaphore leak) 警告。
+
+## [0.4.2] - 2026-03-02
+
+### Optimized (Performance Refactoring)
+- **Priority Intent Parsing (邏輯前置化)**
+  - 重構 `parse_intent_with_llm`：當 `keyword_intent` 已具備明確的目標與動作時，直接返回結果，完全跳過 LLM (Ollama) 呼叫。大幅降低了常見指令（如「開燈」）的延遲。
+- **In-Memory ASR Pipeline (I/O 優化)**
+  - 修改 `transcribe_audio`：移除實體暫存 WAV 檔案機制，改用 `io.BytesIO` 在記憶體中建構音訊資料流，減少磁碟 I/O 開銷。
+  - 將音訊偵錯存檔動作 (`save_audio_file`) 移至背景非同步執行，不再阻塞主處理流程。
+- **Non-blocking Model Inference (非同步推論)**
+  - 使用 `asyncio.to_thread` 執行阻塞式的 Whisper `transcribe` 推論，確保大型模型運算時不會阻塞 WebSocket 事件迴圈，提升系統併發穩定性。
+- **ASR Tuning**
+  - 調整 `faster-whisper` 的 `beam_size` 從 5 降至 3，在保持精確度的前提下換取更快的轉錄速度。
+
+### Fixed
+- **Enhanced Validation Logging**
+  - 在 `ActionValidator` 中導入專屬 Logger，詳細記錄動作驗證失敗的具體原因（如：無效動作、未知裝置、不允許的數值），提升可維護性。
+
 ## [0.4.1] - 2026-03-01
 
 ### Fixed
