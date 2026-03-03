@@ -290,6 +290,8 @@ static void init_websocket(void)
 #define FFT_ENERGY_THRESHOLD 25000.0f  // 閾值 (根據 2026-03-03 測試建議)
 #define FFT_GAIN            1.0f    // 增益因子
 
+#define VAD_FFT_DEBUG       1       // 設置為 1 以開啟 VAD 統計與 Debug 日誌，0 則關閉以節省資源
+
 /* ---------- 統計數據 ---------- */
 typedef struct {
     uint32_t fft_triggers;        // FFT 觸發次數
@@ -460,71 +462,67 @@ static bool read_audio_to_buffer(int16_t *out_buffer, size_t num_samples)
  * 計算特定頻率範圍內的能量，可過濾非人聲頻率
  * ============================================================ */
 
+/* ============================================================
+ * VAD 方法: FFT 頻域能量分析 (優化版)
+ * 計算特定頻率範圍內的能量，可過濾非人聲頻率
+ * ============================================================ */
+
+// 預計算的旋轉因子查表 (針對 FFT_SIZE 512)
+static float twiddle_r[FFT_SIZE / 2];
+static float twiddle_i[FFT_SIZE / 2];
+static bool twiddle_initialized = false;
+
+static void init_twiddle_factors() {
+    if (twiddle_initialized) return;
+    for (int i = 0; i < FFT_SIZE / 2; i++) {
+        float angle = -2.0f * (float)M_PI * i / FFT_SIZE;
+        twiddle_r[i] = cosf(angle);
+        twiddle_i[i] = sinf(angle);
+    }
+    twiddle_initialized = true;
+}
+
 /**
- * 簡單的 FFT 計算 (Radix-2 DIT)
- * @param real 實部陣列 (輸入/輸出)
- * @param imag 虛部陣列
- * @param n FFT 點數 (需為 2 的冪)
+ * 優化版 FFT 計算 (基 2 DIT，查表法)
  */
-static void vad_fft_compute(float *real, float *imag, int n)
+static void vad_fft_compute_optimized(float *real, float *imag, int n)
 {
+    init_twiddle_factors();
     int j = 0;
-    
-    // Bit reversal
     for (int i = 0; i < n - 1; i++) {
         if (i < j) {
-            float temp_r = real[i];
-            float temp_i = imag[i];
-            real[i] = real[j];
-            imag[i] = imag[j];
-            real[j] = temp_r;
-            imag[j] = temp_i;
+            float temp_r = real[i]; float temp_i = imag[i];
+            real[i] = real[j]; imag[i] = imag[j];
+            real[j] = temp_r; imag[j] = temp_i;
         }
         int k = n / 2;
-        while (k <= j) {
-            j -= k;
-            k /= 2;
-        }
+        while (k <= j) { j -= k; k /= 2; }
         j += k;
     }
-    
-    // Cooley-Tukey FFT
-    for (int len = 2; len <= n; len *= 2) {
-        float angle = -2.0f * M_PI / len;
-        float wlen_r = cosf(angle);
-        float wlen_i = sinf(angle);
-        
+
+    for (int len = 2; len <= n; len <<= 1) {
+        int half = len >> 1;
+        int step = n / len;
         for (int i = 0; i < n; i += len) {
-            float wr = 1.0f;
-            float wi = 0.0f;
-            
-            for (int k = 0; k < len / 2; k++) {
-                float u_r = real[i + k];
-                float u_i = imag[i + k];
-                float t_r = wr * real[i + k + len/2] - wi * imag[i + k + len/2];
-                float t_i = wr * imag[i + k + len/2] + wi * real[i + k + len/2];
+            for (int k = 0; k < half; k++) {
+                int twiddle_idx = k * step;
+                float wr = twiddle_r[twiddle_idx];
+                float wi = twiddle_i[twiddle_idx];
                 
-                real[i + k] = u_r + t_r;
-                imag[i + k] = u_i + t_i;
-                real[i + k + len/2] = u_r - t_r;
-                imag[i + k + len/2] = u_i - t_i;
+                float tr = wr * real[i + k + half] - wi * imag[i + k + half];
+                float ti = wr * imag[i + k + half] + wi * real[i + k + half];
                 
-                float wr_new = wr * wlen_r - wi * wlen_i;
-                float wi_new = wr * wlen_i + wi * wlen_r;
-                wr = wr_new;
-                wi = wi_new;
+                real[i + k + half] = real[i + k] - tr;
+                imag[i + k + half] = imag[i + k] - ti;
+                real[i + k] += tr;
+                imag[i + k] += ti;
             }
         }
     }
 }
 
 /**
- * 新方法 VAD 判定 (FFT 頻域分析)
- * 使用簡化的頻帶能量計算
- * @param buffer 音訊資料 (float)
- * @param length 樣本數量 (需 >= FFT_SIZE)
- * @param fft_energy_out 輸出 FFT 能量值 (可為 NULL)
- * @return true = 偵測到語音, false = 安靜
+ * 優化版 VAD 判定 (移除頻繁 sqrtf)
  */
 static bool vad_new_fft_detect(const float *buffer, size_t length, float *fft_energy_out)
 {
@@ -533,39 +531,32 @@ static bool vad_new_fft_detect(const float *buffer, size_t length, float *fft_en
         return false;
     }
     
-    // 準備 FFT 資料
     static float real[FFT_SIZE];
     static float imag[FFT_SIZE];
     
-    // 複製資料
+    // Windowing & Copy
     for (int i = 0; i < FFT_SIZE; i++) {
-        real[i] = buffer[i];
+        float window = 0.54f - 0.46f * cosf(2.0f * (float)M_PI * i / (FFT_SIZE - 1));
+        real[i] = buffer[i] * window;
         imag[i] = 0.0f;
     }
     
-    // Hamming Window
-    for (int i = 0; i < FFT_SIZE; i++) {
-        float window = 0.54f - 0.46f * cosf(2.0f * M_PI * i / (FFT_SIZE - 1));
-        real[i] *= window;
-    }
+    vad_fft_compute_optimized(real, imag, FFT_SIZE);
     
-    // 執行 FFT
-    vad_fft_compute(real, imag, FFT_SIZE);
-    
-    // 計算人聲頻段能量 (300-3400Hz)
     int start_bin = (FFT_FREQ_MIN * FFT_SIZE) / SAMPLE_RATE;
     int end_bin = (FFT_FREQ_MAX * FFT_SIZE) / SAMPLE_RATE;
     
-    float sum_sq = 0.0f;
+    float sum_power = 0.0f; 
     int bin_count = 0;
     
     for (int i = start_bin; i < end_bin && i < FFT_SIZE/2; i++) {
-        float mag = sqrtf(real[i] * real[i] + imag[i] * imag[i]);
-        sum_sq += mag * mag;  // 累加能量的平方
+        // 使用 Magnitude Squared (Power)，省去迴圈內的 sqrtf
+        sum_power += (real[i] * real[i] + imag[i] * imag[i]);
         bin_count++;
     }
     
-    float band_rms = (bin_count > 0) ? sqrtf(sum_sq / bin_count) : 0.0f;
+    // 最終只計算一次平方根
+    float band_rms = (bin_count > 0) ? sqrtf(sum_power / bin_count) : 0.0f;
     
     if (fft_energy_out) {
         *fft_energy_out = band_rms;
@@ -607,15 +598,17 @@ static bool vad_detect(const float *buffer, size_t length,
     if (fft_energy) vad_stats.fft_avg = vad_stats.fft_avg * 0.99f + (*fft_energy) * 0.01f;
     if (rms_val) vad_stats.rms_avg = vad_stats.rms_avg * 0.99f + (*rms_val) * 0.01f;
     
+#if VAD_FFT_DEBUG
     // 定期打印統計數據
     if (frame_count % PRINT_STATS_INTERVAL == 0) {
-        printf("\r\n[========== VAD 統計 (Frame: %u) ==========]\n", frame_count);
-        printf("  FFT 觸發次數:             %u\n", vad_stats.fft_triggers);
-        printf("  ML 辨識成功次數:          %u\n", vad_stats.ml_triggered);
+        printf("\r\n[========== VAD 統計 (Frame: %lu) ==========]\n", (unsigned long)frame_count);
+        printf("  FFT 觸發次數:             %lu\n", (unsigned long)vad_stats.fft_triggers);
+        printf("  ML 辨識成功次數:          %lu\n", (unsigned long)vad_stats.ml_triggered);
         printf("  RMS 平均值:               %.2f\n", vad_stats.rms_avg);
         printf("  FFT 能量平均值:           %.2f (閾值: %.0f)\n", vad_stats.fft_avg, FFT_ENERGY_THRESHOLD);
         printf("  [========================================]\n\n");
     }
+#endif
     
     return fft_result;
 }
@@ -804,6 +797,7 @@ static void inference_task(void *arg)
             if (strcmp(ei_classifier_inferencing_categories[i], "heymiaomiao") == 0) {
                 detected_confidence = result.classification[i].value;
                 
+#if VAD_FFT_DEBUG
                 // Debug log: 顯示候選喚醒詞的 VAD 數據
                 if (detected_confidence > 0.3) {
                     printf("[DEBUG] Conf: %.3f, RMS: %.2f, FFT: %.2f(>%.0f?), Pass: %s\n", 
@@ -812,6 +806,7 @@ static void inference_task(void *arg)
                            current_fft_energy, FFT_ENERGY_THRESHOLD,
                            vad_passed ? "YES" : "NO");
                 }
+#endif
                 
                 // 使用 FFT VAD 判定結果 + ML 信心度
                 if (detected_confidence >= EI_CLASSIFIER_THRESHOLD && vad_passed) {

@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **VAD Statistics Dashboard**
   - 在韌體中加入統計機制，每 30 幀輸出一次 FFT 觸發與 ML 辨識成功的統計數據。
   - 預設 FFT 能量閾值優化為 `25000`（根據實測數據調優）。
+- **Performance Optimized FFT (運算優化)**
+  - 引入 **旋轉因子查表法 (Twiddle Factors Table)**，消除 `cosf/sinf` 重複運算。
+  - 實作 **Magnitude Squared 累加策略**，將迴圈內的開根號運算減少為一次，大幅降低 CPU 負載。
+- **Conditional Debug Logging (資源節省)**
+  - 新增 `VAD_FFT_DEBUG` 宏控制，允許一鍵關閉詳細 VAD 統計與推論日誌，節省 Serial I/O 資源。
+  - 修正了 `uint32_t` 格式化字串的編譯警告。
+
 
 ## [0.4.3] - 2026-03-02
 
