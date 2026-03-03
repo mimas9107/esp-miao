@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-03-03
+
+### Added (Firmware Optimization)
+- **FFT-based VAD (Voice Activity Detection)**
+  - 整合自 `esp-miao-test2` 的重大韌體優化。
+  - 引入 512 點 FFT 分析，鎖定人聲頻帶 (300Hz ~ 3400Hz) 進行能量偵測。
+  - 取代舊有的 RMS 能量門檻法，顯著提升了遠場識別穩定性並降低環境噪音誤觸發。
+- **VAD Statistics Dashboard**
+  - 在韌體中加入統計機制，每 30 幀輸出一次 FFT 觸發與 ML 辨識成功的統計數據。
+  - 預設 FFT 能量閾值優化為 `25000`（根據實測數據調優）。
+
 ## [0.4.3] - 2026-03-02
 
 ### Added

@@ -44,7 +44,7 @@
 /* ---------- Configuration ---------- */
 
 // Removed hardcoded WIFI_SSID and WIFI_PASS, now from NVS/Kconfig
-#define SERVER_URL      "ws://192.168.1.103:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
+#define SERVER_URL      "ws://192.168.1.16:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
 
 #define LED_PIN         GPIO_NUM_2
 
@@ -283,7 +283,24 @@ static void init_websocket(void)
 #define DMA_BUF_COUNT   8
 #define DMA_BUF_LEN     256
 
-#define VAD_THRESHOLD   1500.0f
+/* ---------- VAD (FFT) 參數 ---------- */
+#define FFT_SIZE            512
+#define FFT_FREQ_MIN        300     // 人聲最低頻率 (Hz)
+#define FFT_FREQ_MAX        3400    // 人聲最高頻率 (Hz)
+#define FFT_ENERGY_THRESHOLD 25000.0f  // 閾值 (根據 2026-03-03 測試建議)
+#define FFT_GAIN            1.0f    // 增益因子
+
+/* ---------- 統計數據 ---------- */
+typedef struct {
+    uint32_t fft_triggers;        // FFT 觸發次數
+    uint32_t ml_triggered;        // ML 辨識成功次數
+    float   rms_avg;              // RMS 平均值 (調試用)
+    float   fft_avg;              // FFT 能量平均值
+} vad_stats_t;
+
+static vad_stats_t vad_stats = {0};
+
+#define PRINT_STATS_INTERVAL  30  // 每多少幀打印一次統計
 
 /* ---------- Recording Configuration ---------- */
 
@@ -438,6 +455,171 @@ static bool read_audio_to_buffer(int16_t *out_buffer, size_t num_samples)
     return true;
 }
 
+/* ============================================================
+ * VAD 方法: FFT 頻域能量分析
+ * 計算特定頻率範圍內的能量，可過濾非人聲頻率
+ * ============================================================ */
+
+/**
+ * 簡單的 FFT 計算 (Radix-2 DIT)
+ * @param real 實部陣列 (輸入/輸出)
+ * @param imag 虛部陣列
+ * @param n FFT 點數 (需為 2 的冪)
+ */
+static void vad_fft_compute(float *real, float *imag, int n)
+{
+    int j = 0;
+    
+    // Bit reversal
+    for (int i = 0; i < n - 1; i++) {
+        if (i < j) {
+            float temp_r = real[i];
+            float temp_i = imag[i];
+            real[i] = real[j];
+            imag[i] = imag[j];
+            real[j] = temp_r;
+            imag[j] = temp_i;
+        }
+        int k = n / 2;
+        while (k <= j) {
+            j -= k;
+            k /= 2;
+        }
+        j += k;
+    }
+    
+    // Cooley-Tukey FFT
+    for (int len = 2; len <= n; len *= 2) {
+        float angle = -2.0f * M_PI / len;
+        float wlen_r = cosf(angle);
+        float wlen_i = sinf(angle);
+        
+        for (int i = 0; i < n; i += len) {
+            float wr = 1.0f;
+            float wi = 0.0f;
+            
+            for (int k = 0; k < len / 2; k++) {
+                float u_r = real[i + k];
+                float u_i = imag[i + k];
+                float t_r = wr * real[i + k + len/2] - wi * imag[i + k + len/2];
+                float t_i = wr * imag[i + k + len/2] + wi * real[i + k + len/2];
+                
+                real[i + k] = u_r + t_r;
+                imag[i + k] = u_i + t_i;
+                real[i + k + len/2] = u_r - t_r;
+                imag[i + k + len/2] = u_i - t_i;
+                
+                float wr_new = wr * wlen_r - wi * wlen_i;
+                float wi_new = wr * wlen_i + wi * wlen_r;
+                wr = wr_new;
+                wi = wi_new;
+            }
+        }
+    }
+}
+
+/**
+ * 新方法 VAD 判定 (FFT 頻域分析)
+ * 使用簡化的頻帶能量計算
+ * @param buffer 音訊資料 (float)
+ * @param length 樣本數量 (需 >= FFT_SIZE)
+ * @param fft_energy_out 輸出 FFT 能量值 (可為 NULL)
+ * @return true = 偵測到語音, false = 安靜
+ */
+static bool vad_new_fft_detect(const float *buffer, size_t length, float *fft_energy_out)
+{
+    if (length < FFT_SIZE) {
+        if (fft_energy_out) *fft_energy_out = 0;
+        return false;
+    }
+    
+    // 準備 FFT 資料
+    static float real[FFT_SIZE];
+    static float imag[FFT_SIZE];
+    
+    // 複製資料
+    for (int i = 0; i < FFT_SIZE; i++) {
+        real[i] = buffer[i];
+        imag[i] = 0.0f;
+    }
+    
+    // Hamming Window
+    for (int i = 0; i < FFT_SIZE; i++) {
+        float window = 0.54f - 0.46f * cosf(2.0f * M_PI * i / (FFT_SIZE - 1));
+        real[i] *= window;
+    }
+    
+    // 執行 FFT
+    vad_fft_compute(real, imag, FFT_SIZE);
+    
+    // 計算人聲頻段能量 (300-3400Hz)
+    int start_bin = (FFT_FREQ_MIN * FFT_SIZE) / SAMPLE_RATE;
+    int end_bin = (FFT_FREQ_MAX * FFT_SIZE) / SAMPLE_RATE;
+    
+    float sum_sq = 0.0f;
+    int bin_count = 0;
+    
+    for (int i = start_bin; i < end_bin && i < FFT_SIZE/2; i++) {
+        float mag = sqrtf(real[i] * real[i] + imag[i] * imag[i]);
+        sum_sq += mag * mag;  // 累加能量的平方
+        bin_count++;
+    }
+    
+    float band_rms = (bin_count > 0) ? sqrtf(sum_sq / bin_count) : 0.0f;
+    
+    if (fft_energy_out) {
+        *fft_energy_out = band_rms;
+    }
+    
+    return (band_rms > FFT_ENERGY_THRESHOLD);
+}
+
+/**
+ * VAD 偵測接口 (含統計顯示)
+ * @param buffer 音訊資料
+ * @param length 樣本數量
+ * @param rms_val 輸出 RMS 值 (可為 NULL)
+ * @param fft_energy 輸出 FFT 能量值 (可為 NULL)
+ * @return true = 偵測到語音, false = 安靜
+ */
+static bool vad_detect(const float *buffer, size_t length, 
+                       float *rms_val, float *fft_energy)
+{
+    // 計算 RMS (僅用於調試顯示與基準比較)
+    if (rms_val) {
+        float sum_sq = 0.0f;
+        for (size_t i = 0; i < length; i++) {
+            sum_sq += buffer[i] * buffer[i];
+        }
+        *rms_val = sqrtf(sum_sq / length);
+    }
+    
+    // FFT 偵測
+    bool fft_result = vad_new_fft_detect(buffer, length, fft_energy);
+    
+    // 統計數據更新
+    static uint32_t frame_count = 0;
+    frame_count++;
+    
+    if (fft_result) vad_stats.fft_triggers++;
+    
+    // 更新平均值 (滑動平均)
+    if (fft_energy) vad_stats.fft_avg = vad_stats.fft_avg * 0.99f + (*fft_energy) * 0.01f;
+    if (rms_val) vad_stats.rms_avg = vad_stats.rms_avg * 0.99f + (*rms_val) * 0.01f;
+    
+    // 定期打印統計數據
+    if (frame_count % PRINT_STATS_INTERVAL == 0) {
+        printf("\r\n[========== VAD 統計 (Frame: %u) ==========]\n", frame_count);
+        printf("  FFT 觸發次數:             %u\n", vad_stats.fft_triggers);
+        printf("  ML 辨識成功次數:          %u\n", vad_stats.ml_triggered);
+        printf("  RMS 平均值:               %.2f\n", vad_stats.rms_avg);
+        printf("  FFT 能量平均值:           %.2f (閾值: %.0f)\n", vad_stats.fft_avg, FFT_ENERGY_THRESHOLD);
+        printf("  [========================================]\n\n");
+    }
+    
+    return fft_result;
+}
+
 /* ---------- Send Audio Stream via WebSocket (Base64 Chunked) ---------- */
 
 static bool send_audio_stream_b64(const int16_t *audio_data, size_t sample_count, float confidence)
@@ -580,7 +762,7 @@ static void inference_task(void *arg)
            (int)(EI_CLASSIFIER_RAW_SAMPLE_COUNT * 1000 / EI_CLASSIFIER_FREQUENCY),
            EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW);
     printf("Threshold: %.2f\r\n", (float)EI_CLASSIFIER_THRESHOLD);
-    printf("VAD Threshold: %.2f (RMS)\r\n\r\n", VAD_THRESHOLD);
+    printf("VAD: FFT Energy Threshold = %.0f\r\n\r\n", FFT_ENERGY_THRESHOLD);
 
     run_classifier_init();
 
@@ -594,11 +776,16 @@ static void inference_task(void *arg)
 
     while (1) {
         float current_rms = 0.0f;
+        float current_fft_energy = 0.0f;
 
-        if (!read_audio_slice(ei_slice_buffer, EI_CLASSIFIER_SLICE_SIZE, &current_rms)) {
+        if (!read_audio_slice(ei_slice_buffer, EI_CLASSIFIER_SLICE_SIZE, NULL)) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
+
+        // 調用統一 VAD 偵測接口 (FFT 優先)
+        bool vad_passed = vad_detect(ei_slice_buffer, EI_CLASSIFIER_SLICE_SIZE, 
+                                     &current_rms, &current_fft_energy);
 
         signal_t signal;
         signal.total_length = EI_CLASSIFIER_SLICE_SIZE;
@@ -616,13 +803,20 @@ static void inference_task(void *arg)
         for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
             if (strcmp(ei_classifier_inferencing_categories[i], "heymiaomiao") == 0) {
                 detected_confidence = result.classification[i].value;
-                // Debug log for suspicious sounds
-                if (detected_confidence > 0.5) {
-                    printf("Probable hit: Conf: %.3f, RMS: %.2f\n", detected_confidence, current_rms);
+                
+                // Debug log: 顯示候選喚醒詞的 VAD 數據
+                if (detected_confidence > 0.3) {
+                    printf("[DEBUG] Conf: %.3f, RMS: %.2f, FFT: %.2f(>%.0f?), Pass: %s\n", 
+                           detected_confidence, 
+                           current_rms,
+                           current_fft_energy, FFT_ENERGY_THRESHOLD,
+                           vad_passed ? "YES" : "NO");
                 }
                 
-                if (detected_confidence >= EI_CLASSIFIER_THRESHOLD && current_rms > VAD_THRESHOLD) {
+                // 使用 FFT VAD 判定結果 + ML 信心度
+                if (detected_confidence >= EI_CLASSIFIER_THRESHOLD && vad_passed) {
                     wake_word_detected = true;
+                    vad_stats.ml_triggered++;  // 記錄 ML 成功觸發次數
                 }
             }
         }

@@ -26,7 +26,7 @@ User
 Mic (INMP441) → ESP32 (Edge Impulse)
                  ├─ MFCC Feature Extraction
                  ├─ TFLite Inference (heymiaomiao)
-                 ├─ RMS VAD Gate
+                 ├─ FFT VAD Gate
                  └─ Audio Streamer (Binary / Base64)
                       ↓
                    Server (Python FastAPI)
@@ -115,7 +115,7 @@ Mic (INMP441) → ESP32 (Edge Impulse)
 | 視窗大小 | 1000 ms (16000 samples) |
 | 推論切片 | 250 ms × 4 slices |
 | 分類 | `heymiaomiao`, `noise`, `unknown` |
-| 閾值 | 0.7 (模型) + 1000.0 (RMS VAD) |
+| 閾值 | 0.85 (模型) + 25000 (FFT VAD) |
 | DSP | MFCC (512 FFT, 32 filters, 13 cepstral) |
 | 推論引擎 | TFLite (EON Compiled, INT8 量化) |
 
@@ -128,16 +128,18 @@ ESP32 V1 的 I2S 硬體在 Mono 模式下容易出現數據錯位。本專案採
 3. **APLL 時鐘** — 啟用 `I2S_CLK_SRC_APLL` 確保精確 16kHz
 4. **數據位移** — INMP441 輸出 24-bit 左對齊，以 `>> 11` 標準化為 16-bit 範圍
 
-### 4.3 VAD (Voice Activity Detection)
+### 4.3 FFT VAD (Voice Activity Detection)
 
-使用 RMS 能量閘避免背景雜音誤判：
+為了提升噪音抗性，v0.4.4 引入了 **FFT 頻域能量分析**。系統僅計算 **300Hz ~ 3400Hz** (人聲核心頻帶) 的能量，有效過濾了低頻底噪與高頻環境噪音。
 
-| 環境 | RMS 值 |
-| :--- | :--- |
-| 安靜 | < 200 |
-| 電視背景音 | 500 ~ 800 |
-| 喚醒詞 (近距離) | 1000 ~ 2000 |
-| 一般說話 (1公尺) | 2000 ~ 7000 |
+| 環境 | FFT 能量 (300-3400Hz) | 狀態 |
+| :--- | :--- | :--- |
+| 安靜環境 | 700 ~ 1500 | 攔截 |
+| 遠處背景音 | 3000 ~ 6000 | 攔截 |
+| **FFT 閾值 (Gate)** | **25000** | **開門** |
+| 喚醒詞 (1~3公尺) | 40000 ~ 70000 | 觸發 |
+
+**優點：** 相比傳統 RMS，FFT VAD 在遠場識別更穩定，且對於冷氣運轉、風扇聲等非人聲持續音有極佳的抑制效果。
 
 ### 4.4 編譯與燒錄
 
