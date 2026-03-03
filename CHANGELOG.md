@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-03-03
+
+### Added (Connectivity Robustness)
+- **WebSocket Emergency Reconnect (緊急重連機制)**
+  - 當偵測到喚醒詞但發現連線失效時，主動觸發 WebSocket Client 的 `Stop -> Start` 流程。
+  - 實作 2 秒重連等待視窗，確保在伺服器重啟後，第一次語音觸發即可強制恢復連線。
+- **WebSocket Keep-alive (心跳探測)**
+  - 啟用每 5 秒一次的 Ping/Pong 探測，能更快偵測到伺服器端的靜默斷線。
+  - 縮短重連與網路超時時間至 5 秒，提升狀態恢復靈敏度。
+- **Enhanced Connection Guard (連線守護)**
+  - 在發送音訊串流前執行 `esp_websocket_client_is_connected` 二次校驗。
+  - 任何發送失敗 (`send_text`/`send_bin`) 均會立即標記斷線狀態，觸發背景自動重連。
+- **Diagnostic Logging (診斷強化)**
+  - 在 WebSocket 事件處理器中增加 `WEBSOCKET_EVENT_ERROR` 的 `op_code` 詳細日誌輸出。
+
 ## [0.4.4] - 2026-03-03
 
 ### Added (Firmware Optimization)

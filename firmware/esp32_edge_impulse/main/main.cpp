@@ -243,13 +243,11 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             ws_connected = true;
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
-            ESP_LOGI(TAG, "WEBSOCKET_EVENT_DISCONNECTED");
+            ESP_LOGW(TAG, "WEBSOCKET_EVENT_DISCONNECTED");
             ws_connected = false;
             break;
         case WEBSOCKET_EVENT_DATA:
-            ESP_LOGI(TAG, "WEBSOCKET_EVENT_DATA");
             if (data->data_len > 0) {
-                // Ensure data is null-terminated for cJSON
                 char *buf = (char *)malloc(data->data_len + 1);
                 if (buf) {
                     memcpy(buf, data->data_ptr, data->data_len);
@@ -260,7 +258,8 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             }
             break;
         case WEBSOCKET_EVENT_ERROR:
-            ESP_LOGI(TAG, "WEBSOCKET_EVENT_ERROR");
+            ESP_LOGE(TAG, "WEBSOCKET_EVENT_ERROR: op_code=%d", data->op_code);
+            ws_connected = false;
             break;
     }
 }
@@ -269,6 +268,10 @@ static void init_websocket(void)
 {
     esp_websocket_client_config_t ws_cfg = {};
     ws_cfg.uri = SERVER_URL;
+    ws_cfg.reconnect_timeout_ms = 5000;   // 縮短重連等待時間至 5 秒
+    ws_cfg.network_timeout_ms = 5000;
+    ws_cfg.ping_interval_sec = 5;         // 每 5 秒發送一次 Ping，主動探測連線狀態
+    ws_cfg.disable_auto_reconnect = false;
 
     ws_client = esp_websocket_client_init(&ws_cfg);
     esp_websocket_register_events(ws_client, WEBSOCKET_EVENT_ANY, websocket_event_handler, (void *)ws_client);
@@ -290,7 +293,7 @@ static void init_websocket(void)
 #define FFT_ENERGY_THRESHOLD 25000.0f  // 閾值 (根據 2026-03-03 測試建議)
 #define FFT_GAIN            1.0f    // 增益因子
 
-#define VAD_FFT_DEBUG       1       // 設置為 1 以開啟 VAD 統計與 Debug 日誌，0 則關閉以節省資源
+#define VAD_FFT_DEBUG       0       // 設置為 1 以開啟 VAD 統計與 Debug 日誌，0 則關閉以節省資源
 
 /* ---------- 統計數據 ---------- */
 typedef struct {
@@ -617,8 +620,9 @@ static bool vad_detect(const float *buffer, size_t length,
 
 static bool send_audio_stream_b64(const int16_t *audio_data, size_t sample_count, float confidence)
 {
-    if (!ws_client || !ws_connected) {
-        ESP_LOGE(TAG, "WebSocket not connected");
+    if (!ws_client || !ws_connected || !esp_websocket_client_is_connected(ws_client)) {
+        ESP_LOGE(TAG, "WebSocket not connected or stale");
+        ws_connected = false;
         return false;
     }
 
@@ -629,6 +633,7 @@ static bool send_audio_stream_b64(const int16_t *audio_data, size_t sample_count
              (unsigned long)xTaskGetTickCount(), sample_count, confidence);
     
     if (esp_websocket_client_send_text(ws_client, start_json, strlen(start_json), portMAX_DELAY) < 0) {
+        ws_connected = false;
         return false;
     }
 
@@ -669,6 +674,7 @@ static bool send_audio_stream_b64(const int16_t *audio_data, size_t sample_count
 
         if (esp_websocket_client_send_text(ws_client, json_buffer, written, portMAX_DELAY) < 0) {
             ESP_LOGE(TAG, "Failed to send chunk %d", chunk_idx);
+            ws_connected = false;
             break;
         }
 
@@ -687,8 +693,9 @@ static bool send_audio_stream_b64(const int16_t *audio_data, size_t sample_count
 
 static bool send_audio_stream_binary(const int16_t *audio_data, size_t sample_count, float confidence)
 {
-    if (!ws_client || !ws_connected) {
-        ESP_LOGE(TAG, "WebSocket not connected");
+    if (!ws_client || !ws_connected || !esp_websocket_client_is_connected(ws_client)) {
+        ESP_LOGE(TAG, "WebSocket not connected or stale");
+        ws_connected = false; // 強制重置旗標
         return false;
     }
 
@@ -699,6 +706,7 @@ static bool send_audio_stream_binary(const int16_t *audio_data, size_t sample_co
              (unsigned long)xTaskGetTickCount(), sample_count, confidence);
     
     if (esp_websocket_client_send_text(ws_client, start_json, strlen(start_json), portMAX_DELAY) < 0) {
+        ws_connected = false; // 發送失敗，標記為斷線
         return false;
     }
 
@@ -713,11 +721,11 @@ static bool send_audio_stream_binary(const int16_t *audio_data, size_t sample_co
         if (esp_websocket_client_send_bin(ws_client, (const char *)(audio_data + samples_sent), 
                                          to_send * sizeof(int16_t), portMAX_DELAY) < 0) {
             ESP_LOGE(TAG, "Failed to send binary chunk");
+            ws_connected = false; // 發送失敗，標記為斷線
             break;
         }
 
         samples_sent += to_send;
-        // Binary transfer is faster, but a small delay helps stability
         vTaskDelay(pdMS_TO_TICKS(5)); 
     }
 
@@ -819,6 +827,26 @@ static void inference_task(void *arg)
         if (wake_word_detected) {
             printf("\r\n>>> 🐱 WAKE WORD DETECTED! (Conf: %.3f) 🐱 <<<\r\n\r\n", detected_confidence);
             
+            // --- WebSocket 緊急重連機制 (v0.4.5) ---
+            if (!ws_connected || !esp_websocket_client_is_connected(ws_client)) {
+                ESP_LOGW(TAG, "Wake word detected but WS is DOWN. Attempting emergency reconnect...");
+                esp_websocket_client_stop(ws_client);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_websocket_client_start(ws_client);
+                
+                // 等待最多 2 秒試圖連上
+                for (int i = 0; i < 20 && (!ws_connected || !esp_websocket_client_is_connected(ws_client)); i++) {
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+                
+                if (ws_connected && esp_websocket_client_is_connected(ws_client)) {
+                    ESP_LOGI(TAG, "Emergency reconnect SUCCESS.");
+                } else {
+                    ESP_LOGE(TAG, "Emergency reconnect FAILED.");
+                }
+            }
+            // -------------------------------------
+
             for (int k = 0; k < 3; k++) {
                 gpio_set_level(LED_PIN, 1);
                 vTaskDelay(pdMS_TO_TICKS(100));
