@@ -257,11 +257,12 @@ class Device(BaseModel):
     """Device definition in device table."""
 
     name: str = Field(..., description="Device name")
-    type: str = Field(..., description="Device type (relay, led, sensor, etc.)")
-    gpio: Optional[int] = Field(None, description="GPIO pin number (optional for MQTT devices)")
+    type: str = Field(..., description="Device type (relay, led, vacuum, etc.)")
+    gpio: Optional[int] = Field(None, description="GPIO pin number (optional for MQTT/API devices)")
     aliases: list[str] = Field(default_factory=list, description="Alternative names for voice recognition")
     control_topic: Optional[str] = Field(None, description="MQTT topic for control")
-    commands: dict[str, str] = Field(default_factory=dict, description="Map action value to MQTT payload")
+    api_url: Optional[str] = Field(None, description="Direct REST API URL for control (optional)")
+    commands: dict[str, str] = Field(default_factory=dict, description="Map action value to MQTT/API payload")
 
     @field_validator("gpio")
     @classmethod

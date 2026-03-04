@@ -37,6 +37,7 @@ from .models import (
 import uvicorn
 import paho.mqtt.client as mqtt
 import os
+import httpx
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
 
@@ -147,14 +148,20 @@ class DynamicDeviceTable:
 
     def update_device(self, dev_info: dict):
         """Register or update a device from MQTT discovery."""
-        name = dev_info.get("device_id")
-        if not name: return
+        # 同時支援 'name' 或 'device_id' 以利外部對接
+        name = dev_info.get("name") or dev_info.get("device_id")
+        if not name:
+            logger.warning("Received discovery payload without name/device_id")
+            return
+        
+        # 同時支援 'type' 或 'device_type'
+        dev_type = dev_info.get("type") or dev_info.get("device_type", "unknown")
         
         # Create Device object (Mapping discovery fields to Device model)
         new_dev = Device(
             name=name,
-            type=dev_info.get("device_type", "unknown"),
-            gpio=dev_info.get("gpio"), # 修正：若無則為 None，不再傳入 -1
+            type=dev_type,
+            gpio=dev_info.get("gpio"),
             aliases=dev_info.get("aliases", []),
             control_topic=dev_info.get("control_topic", MQTT_TOPIC),
             commands=dev_info.get("commands", {"on": "ON", "off": "OFF"})
@@ -181,6 +188,14 @@ device_table = DynamicDeviceTable(devices=[
     Device(name="light", type="relay", gpio=26, control_topic="lamp/command"),
     Device(name="fan", type="relay", gpio=27, control_topic="home/fan/command"),
     Device(name="led", type="led", gpio=2, control_topic="home/led/command"),
+    # 新增掃地機器人 (直連 myxiaomi API)
+    Device(
+        name="vacuum", 
+        type="vacuum", 
+        aliases=["掃地機器人", "小貓", "吸塵器", "機器人", "掃地機", "掃地", "清掃", "少地"],
+        api_url="http://192.168.1.16:8009/v1/control/execute",
+        commands={"on": "start", "off": "home"}
+    ),
 ])
 
 # --- MQTT Setup ---
@@ -197,38 +212,49 @@ def on_connect(client, userdata, flags, rc, properties):
     else:
         logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
 
-def on_message(client, userdata, msg):
-    if msg.topic == MQTT_DISCOVERY_TOPIC:
-        try:
-            payload = json.loads(msg.payload.decode())
-            device_table.update_device(payload)
-        except Exception as e:
-            logger.error(f"Error parsing discovery payload: {e}")
-
-mqtt_client.on_connect = on_connect
-mqtt_client.on_message = on_message
-
-def publish_mqtt_command(target: str, value: str):
-    """查表式發送 MQTT 指令，支援動態 Topic 與 Payload。"""
+async def dispatch_command(target: str, value: str):
+    """通用指令派發器，支援 MQTT 與 HTTP API。"""
     device = device_table.get_device(target)
     if not device:
         logger.warning(f"Attempted to control unregistered device: {target}")
         return
 
-    # 獲取該裝置設定的 Topic 與指令映射
-    # Pydantic 物件屬性若為 None 時，getattr 會拿到 None 而不觸發預設值
-    topic = device.control_topic if device.control_topic else MQTT_TOPIC
-    commands = device.commands if device.commands else {"on": "ON", "off": "OFF"}
-    cmd_payload = commands.get(value.lower(), value.upper())
+    # 決定發送方式：API 優先，MQTT 為輔
+    if device.api_url:
+        # HTTP API 模式 (針對 myxiaomi 等已有服務的專案)
+        cmd_payload = device.commands.get(value.lower(), value)
+        logger.info(f"HTTP API Call: [{device.api_url}] -> cmd={cmd_payload} (for {target})")
+        
+        try:
+            # 針對 myxiaomi (vacuumd) 的 CommandRequest 格式
+            # device_id 在 myxiaomi 端固定為 robot_s5 (除非 Discovery 修改)
+            payload = {
+                "device_id": "robot_s5", 
+                "command": cmd_payload
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(device.api_url, json=payload)
+                if response.status_code == 200:
+                    logger.info(f"HTTP Success: {response.json()}")
+                else:
+                    logger.error(f"HTTP Error {response.status_code}: {response.text}")
+        except Exception as e:
+            logger.error(f"HTTP Request failed for {target}: {e}")
+    
+    else:
+        # MQTT 模式 (針對嵌入式裸機)
+        topic = device.control_topic if device.control_topic else MQTT_TOPIC
+        commands = device.commands if device.commands else {"on": "ON", "off": "OFF"}
+        cmd_payload = commands.get(value.lower(), value.upper())
 
-    try:
-        result = mqtt_client.publish(topic, cmd_payload)
-        if result.rc == 0:
-            logger.info(f"MQTT Publish: [{topic}] -> {cmd_payload} (for {target})")
-        else:
-            logger.error(f"Failed to publish MQTT command for {target} (rc={result.rc})")
-    except Exception as e:
-        logger.error(f"MQTT Publish Error for {target}: {e}")
+        try:
+            result = mqtt_client.publish(topic, cmd_payload)
+            if result.rc == 0:
+                logger.info(f"MQTT Publish: [{topic}] -> {cmd_payload} (for {target})")
+            else:
+                logger.error(f"Failed to publish MQTT command for {target} (rc={result.rc})")
+        except Exception as e:
+            logger.error(f"MQTT Publish Error for {target}: {e}")
 
 # --- Action Validator (Safety) ---
 action_validator = ActionValidator(device_table)
@@ -432,14 +458,14 @@ async def transcribe_audio(
 
 # 動作關鍵字 (全局共通)
 ACTION_KEYWORDS: dict[str, list[str]] = {
-    "on": ["開", "打開", "開啟", "啟動", "turn on", "on", "open", "kaitan"],
-    "off": ["關", "關閉", "關掉", "停止", "turn off", "off", "close", "kuan teng"],
+    "on": ["開", "打開", "開啟", "啟動", "掃地", "清掃", "開始", "turn on", "on", "open", "kaitan"],
+    "off": ["關", "關閉", "關掉", "停止", "回充", "充電", "回去", "回家", "turn off", "off", "close", "kuan teng"],
 }
 
 
 def extract_intent_from_text(text: str) -> dict:
     """
-    使用從 DeviceRegistry 獲取的動態別名地圖進行匹配。
+    使用從 DeviceRegistry 獲獲取的動態別名地圖進行匹配。
     """
     text_lower = text.replace(" ", "").lower()
 
@@ -463,8 +489,12 @@ def extract_intent_from_text(text: str) -> dict:
     if target and value:
         return {"action": "relay_set", "target": target, "value": value}
     
-    # 特殊處理：只有裝置但沒動作
+    # 針對掃地機器人的特殊處理：如果只說了名字（例如：小貓），預設為啟動
     if target:
+        device = device_table.get_device(target)
+        if device and device.type == "vacuum":
+            logger.info(f"Defaulting to 'on' for vacuum target: {target}")
+            return {"action": "relay_set", "target": target, "value": "on"}
         return {"action": "unknown", "target": target, "value": ""}
 
     return {"action": "unknown", "target": "", "value": ""}
@@ -555,7 +585,7 @@ async def handle_command_request(device_id: str, data: dict) -> dict:
                 ).model_dump()
 
             await play_local_sound(get_action_sound(target, value))
-            publish_mqtt_command(target, value)
+            await dispatch_command(target, value)
             return Action(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -633,7 +663,7 @@ async def handle_fallback_request(device_id: str, data: dict) -> dict:
             ).model_dump()
 
         await play_local_sound(get_action_sound(target, value))
-        publish_mqtt_command(target, value)
+        await dispatch_command(target, value)
         return Action(
             device_id=device_id,
             timestamp=int(time.time() * 1000),
@@ -760,7 +790,7 @@ async def process_complete_audio(
             ).model_dump()
 
         await play_local_sound(get_action_sound(target, value))
-        publish_mqtt_command(target, value)
+        await dispatch_command(target, value)
         return Action(
             device_id=device_id,
             timestamp=int(time.time() * 1000),

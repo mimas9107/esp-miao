@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] - 2026-03-04
+
+### Added (Cross-Project Integration & Robustness)
+- **HTTP API Control Module (HTTP API 控制模組)**
+  - 實作了通用指令派發器 `dispatch_command`，支援 MQTT 與 REST API 雙模式。
+  - 直接與 `myxiaomi` (vacuumd) 專案整合：語音啟動/回充掃地機器人改走 HTTP POST 呼叫 8009 埠口。
+  - **Robustness Throttling**: 將 HTTP Timeout 放寬至 10 秒，以適應掃地機器人較慢的硬體響應。
+- **Virtual Device Support & Semantic Logic (虛擬設備與語義強化)**
+  - 在設備表預設註冊 `vacuum` (掃地機器人)。
+  - **ASR Tolerance**: 擴充別名包含「少地」、「少弟」、「清掃」等詞彙，提升雜音環境辨識率。
+  - **Intention Completion**: 針對掃地機實作「預設啟動」邏輯，若僅說出設備名則自動執行 `start`。
+
 ## [0.4.6] - 2026-03-04
 
 ### Optimized (Server Performance & RPi4 Support)
