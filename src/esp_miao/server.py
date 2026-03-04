@@ -81,7 +81,7 @@ LOCAL_SOUND_DIR = Path(__file__).parent / "playsound"
 TIMEOUT_SECONDS = 10.0  # WebSocket response timeout
 
 async def play_local_sound(filename: str):
-    """Play a sound file locally on the server."""
+    """Play a sound file locally on the server using non-blocking subprocess."""
     if not filename:
         return
 
@@ -91,10 +91,15 @@ async def play_local_sound(filename: str):
         return
 
     try:
-        # Use aplay for WAV files. 
         logger.info(f"Playing local sound: {filename}")
-        import subprocess
-        subprocess.Popen(["aplay", str(sound_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 使用 asyncio 的子進程管理，能自動處理收割 (reap) 以防止殭屍進程 <defunct>
+        proc = await asyncio.create_subprocess_exec(
+            "aplay", str(sound_path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+        # 在背景等待進程結束，不阻塞當前的 WebSocket 任務
+        asyncio.create_task(proc.wait())
     except Exception as e:
         logger.error(f"Failed to play local sound {filename}: {e}")
 
