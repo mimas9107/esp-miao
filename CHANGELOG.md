@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-03-04
+
+### Optimized (Server Performance & RPi4 Support)
+- **Resolved High Idle CPU (待機佔用消除)**
+  - 修正了 `uvicorn` 的啟動參數，預設關閉 `reload` (Hot Reload) 模式。
+  - 徹底解決了因掃描 `firmware/` 目錄中數千個 C++ SDK 檔案導致 RPi4 單核佔用 88% 的效能問題。
+  - 新增 `SERVER_RELOAD` 環境變數，允許在開發環境手動開啟，並自動限制監控路徑僅為 `src/`。
+- **Inference Concurrency Control (推論併發控制)**
+  - 引入 `ThreadPoolExecutor(max_workers=1)`。
+  - 限制推論任務為單一佇列排隊執行，防止 RPi4 因多個語音請求併發而導致 CPU 飽和與系統當機。
+- **Resource Loading Strategy (資源載入優化)**
+  - 實作單例模式 (Singleton) 載入 Whisper 模型。
+  - 預設維持啟動即載入 (Preload) 以保證即時響應，但提供 `LOAD_MODEL_ON_START=0` 選項供極限省電/省記憶體模式使用。
+- **I/O & Logging Throttling (I/O 節流)**
+  - 新增 `DEBUG_AUDIO_SAVE` 環境變數，預設關閉音訊除錯存檔，減少磁碟 I/O wait。
+  - 日誌級別改為可透過 `LOG_LEVEL` 環境變數動態配置。
+
 ## [0.4.5] - 2026-03-03
 
 ### Added (Connectivity Robustness)

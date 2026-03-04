@@ -386,3 +386,18 @@ same as ./REFERENCE.md
 * [https://github.com/ollama/ollama](https://github.com/ollama/ollama)
 * [https://docs.espressif.com/projects/esp-idf](https://docs.espressif.com/projects/esp-idf)
 * [https://edgeimpulse.com](https://edgeimpulse.com)
+
+---
+
+## Performance Tuning (RPi4 Optimized)
+
+本專案針對 Raspberry Pi 4 進行了深度效能優化。您可以透過 `.env` 檔案或環境變數調整以下參數：
+
+| 環境變數 | 預設值 | 說明 |
+| :--- | :--- | :--- |
+| `SERVER_RELOAD` | `0` | 是否開啟 Hot Reload。生產環境務必設為 `0` 以消除高 CPU 佔用。 |
+| `LOAD_MODEL_ON_START` | `1` | 是否啟動即載入模型。設為 `1` 可保證即時響應；`0` 則採延遲載入以節省 RAM。 |
+| `LOG_LEVEL` | `INFO` | 日誌等級。穩定後建議設為 `WARNING` 以節省 I/O。 |
+| `DEBUG_AUDIO_SAVE` | `0` | 是否將錄音存檔。設為 `0` 可大幅減少 SD 卡寫入開銷。 |
+
+**註：** 伺服器已內建單執行緒推論保護，確保在 RPi4 上同一時間僅處理一個語音請求，避免系統崩潰。

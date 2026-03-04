@@ -38,13 +38,38 @@ import uvicorn
 import paho.mqtt.client as mqtt
 import os
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor
 
 # --- Load Environment Variables ---
 load_dotenv()
 
+# --- Global Executor for CPU-bound tasks ---
+# 在 RPi4 上，建議限制 max_workers=1 以避免多個 ASR/LLM 任務併發導致系統崩潰
+inference_executor = ThreadPoolExecutor(max_workers=1)
+
+# --- Resource Configuration ---
+# 預設為 1 (啟動即載入)，確保第一聲指令即時響應。在 RPi4 記憶體極度不足時可設為 0 改用 Lazy Load。
+LOAD_MODEL_ON_START = os.getenv("LOAD_MODEL_ON_START", "1") == "1"
+DEBUG_AUDIO_SAVE = os.getenv("DEBUG_AUDIO_SAVE", "0") == "1" # 預設關閉以節省 IO
+
+# --- ASR Pipeline (Faster-Whisper) ---
+whisper_model: Optional[WhisperModel] = None
+
+def get_whisper_model() -> WhisperModel:
+    """單例模式獲取 Whisper 模型，支援延遲加載。"""
+    global whisper_model
+    if whisper_model is None:
+        logger.info("Initializing Whisper model (base, cpu)...")
+        start_time = time.perf_counter()
+        whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+        elapsed = time.perf_counter() - start_time
+        logger.info(f"Whisper model loaded in {elapsed:.2f} seconds.")
+    return whisper_model
+
 # --- Logging setup ---
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("esp-miao")
@@ -331,12 +356,9 @@ async def transcribe_audio(
     """
     Transcribe audio to text using faster-whisper.
     """
-    global whisper_model
-    if whisper_model is None:
-        logger.error("Whisper model not initialized")
-        return ""
-
     try:
+        model = get_whisper_model()
+        
         # Decode base64 to bytes
         audio_bytes = base64.b64decode(audio_base64)
         
@@ -366,7 +388,7 @@ async def transcribe_audio(
 
         # 定義阻塞推論的同步函式
         def run_transcription():
-            segments, info = whisper_model.transcribe(
+            segments, info = model.transcribe(
                 wav_buf, 
                 beam_size=3, # 優化：縮小 beam_size 換取速度
                 language="zh",
@@ -388,8 +410,9 @@ async def transcribe_audio(
                     text_segments.append(clean_text)
             return "".join(text_segments).strip(), info
 
-        # 使用 asyncio.to_thread 非同步執行阻塞式的 Whisper 推論
-        text, info = await asyncio.to_thread(run_transcription)
+        # 使用全域受限的 executor 執行阻塞式的 Whisper 推論，防止 CPU 飽和
+        loop = asyncio.get_event_loop()
+        text, info = await loop.run_in_executor(inference_executor, run_transcription)
         
         if text:
             logger.info(f"ASR (Whisper) [{info.language}]: {text}")
@@ -687,7 +710,10 @@ async def process_complete_audio(
                 logger.error(f"Failed to save debug audio: {e}")
 
         # 使用 asyncio.to_thread 在背景儲存，不阻塞主流程
-        asyncio.create_task(asyncio.to_thread(save_audio_file))
+        if DEBUG_AUDIO_SAVE:
+            asyncio.create_task(asyncio.to_thread(save_audio_file))
+        else:
+            logger.debug("Skipping audio debug file save (DEBUG_AUDIO_SAVE=0)")
 
         # --- 啟動 ASR (Faster-Whisper) ---
         text = await transcribe_audio(audio_base64, audio_format)
@@ -821,13 +847,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"MQTT Connection Error: {e}")
 
-    # Initialize Whisper
-    try:
-        logger.info("Initializing Whisper model (base, cpu)...")
-        whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
-        logger.info("Whisper model loaded.")
-    except Exception as e:
-        logger.error(f"Failed to load Whisper model: {e}")
+    # Initialize Whisper (Only if requested on start)
+    if LOAD_MODEL_ON_START:
+        try:
+            get_whisper_model()
+        except Exception as e:
+            logger.error(f"Failed to load Whisper model on start: {e}")
+    else:
+        logger.info("Whisper model will be loaded lazily on first request.")
 
     logger.info(f"Devices registered: {[d.name for d in device_table.devices]}")
     logger.info(f"Allowed actions: {ALLOWED_ACTIONS}")
@@ -990,12 +1017,19 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
 def main():
     """Run server with uvicorn."""
     import uvicorn
+    import os
+
+    # 讀取環境變數，預設關閉 reload 以節省 RPi4 資源
+    reload_enabled = os.getenv("SERVER_RELOAD", "0") == "1"
+    
+    logger.info(f"Starting server (reload={'enabled' if reload_enabled else 'disabled'})...")
 
     uvicorn.run(
         "esp_miao.server:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
+        reload=reload_enabled,
+        reload_dirs=["src"] if reload_enabled else None, # 即使開啟也只監控 Python 原始碼
         log_level="info",
     )
 
