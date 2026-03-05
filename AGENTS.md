@@ -5,8 +5,9 @@
 * 請參考 SPEC.md 規格精神進行開發.
 
 # environment
-本專案以 uv為主要套件與環境管理,
 本專案的 firmware/esp32_edge_impulse/ 是主要喚醒詞接收核心, 利用 esp idf 環境 結合 edge impulse mfcc模型開發.
+本專案的 src/esp-miao/ 為主要伺服器中樞, 負責接收喚醒後的 ASR指令解析過濾、LLM指令fallback補全、MQTT裝置管理註冊與控制、支援HTTPX Restful API溝通子控制器
+本專案以 uv為主要套件與環境管理,
 
 * 已經 uv init過:
 pyproject.toml
@@ -42,4 +43,10 @@ idf.py
   - 任務: 接收音訊、ASR 辨識、LLM 意圖解析。
   - 觸發: 根據解析結果，由伺服器發送 MQTT 指令 (例如 "ON"/"OFF") 到 `lamp/command`。
   - 職責: 所有的控制決策與 MQTT Trigger 均在伺服器端執行。
+
+# 開發日誌依據 (路徑： ./develop_journal/<YYYY-MM-DD/>/子計畫[選項])
+  - PLAN.md 一定要先讀的計畫.
+  - TODO.md 計畫要執行的詳細項目排程.
+  - NOTES.md 計畫執行時的大大小小技術要點可以記錄下來幫助你記憶.
+  - (TEST_)REVIEW_TODO.md 最後項目做完(或測試做完)要審查的要點.
 
