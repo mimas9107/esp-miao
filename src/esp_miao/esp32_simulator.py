@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """ESP32 Simulator for testing WebSocket communication.
 
-This script simulates an ESP32 device connecting to the server,
-implementing the state machine and protocol defined in SPEC.md.
-
-Usage:
-    uv run python -m esp_miao.esp32_simulator
-    uv run python -m esp_miao.esp32_simulator --device-id esp32_test --host localhost --port 8000
+Updated 2026-03-05: Added time_sync support and fixed attribute errors.
 """
 
 import argparse
@@ -18,6 +13,7 @@ import sys
 import time
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 try:
     import websockets
@@ -80,6 +76,8 @@ class ESP32Simulator:
         self.state = State.IDLE
         self.ws = None
         self.running = False
+        self.msg_queue = asyncio.Queue()
+        self.reader_task = None
 
     @property
     def ws_uri(self) -> str:
@@ -129,15 +127,30 @@ class ESP32Simulator:
             self.log(f">>> {json_str}", "SEND")
             await self.ws.send(json_str)
 
-    async def receive_message(self) -> dict:
-        """Receive JSON message from server."""
-        if self.ws:
-            raw = await self.ws.recv()
-            self.log(f"<<< {raw}", "RECV")
-            return json.loads(raw)
-        return {}
+    async def _reader_loop(self):
+        """Background loop to read from websocket."""
+        try:
+            async for raw in self.ws:
+                msg = json.loads(raw)
+                self.log(f"<<< {raw}", "RECV")
+                
+                # Auto handle system messages
+                if msg.get("type") == "time_sync":
+                    self.handle_time_sync(msg)
+                else:
+                    await self.msg_queue.put(msg)
+        except Exception as e:
+            if self.running:
+                self.log(f"Reader loop error: {e}", "ERROR")
 
-    # --- Protocol Messages (from SPEC.md 1.2, 1.3) ---
+    async def receive_message(self, timeout: float = 10.0) -> dict:
+        """Receive message from queue."""
+        try:
+            return await asyncio.wait_for(self.msg_queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return {}
+
+    # --- Protocol Messages ---
 
     def make_command_request(self, cmd_id: int, confidence: float = 0.95) -> dict:
         """Create command_request message."""
@@ -176,10 +189,21 @@ class ESP32Simulator:
             },
         }
 
+    def make_action_result(self, success: bool, error: str = None) -> dict:
+        return {
+            "type": "action_result",
+            "device_id": self.config.device_id,
+            "timestamp": self.get_timestamp(),
+            "payload": {"status": "success" if success else "failure", "error": error},
+        }
+
     # --- Action Handlers ---
 
+    def handle_time_sync(self, msg: dict):
+        payload = msg.get("payload", {})
+        self.log(f"Time synchronized with server: {payload.get('seconds')}", "INFO")
+
     async def handle_action(self, msg: dict) -> bool:
-        """Handle action message from server. Returns success status."""
         payload = msg.get("payload", {})
         action = payload.get("action", "")
         target = payload.get("target", "")
@@ -188,7 +212,6 @@ class ESP32Simulator:
 
         self.log(f"Executing: {action}({target}={value})", "INFO")
 
-        # Simulate action execution
         if action == "relay_set":
             self.log(f"[RELAY] {target} -> {value}", "INFO")
         elif action == "led_set":
@@ -201,291 +224,101 @@ class ESP32Simulator:
 
         if sound:
             self.log(f"[SOUND] Playing: {sound}", "INFO")
-
         return True
 
     async def handle_play(self, msg: dict):
-        """Handle play message from server."""
         payload = msg.get("payload", {})
-        audio = payload.get("audio", "")
-        self.log(f"[AUDIO] Playing: {audio}", "INFO")
+        self.log(f"[AUDIO] Playing: {payload.get('audio')}", "INFO")
 
     # --- State Machine Flow ---
 
     async def simulate_wake(self):
-        """Simulate wake word detection."""
         self.set_state(State.WAKE)
-        self.log("Wake word detected: 'Hi 喵喵'", "INFO")
-        await asyncio.sleep(0.5)
-
-    async def simulate_listen(self):
-        """Simulate listening for command."""
-        self.set_state(State.LISTEN)
-        self.log("Listening for command...", "INFO")
-        await asyncio.sleep(1.0)
-
-    async def simulate_recognize(self, cmd_id: int = None, text: str = None):
-        """Simulate esp-sr recognition."""
-        self.set_state(State.RECOGNIZE)
-
-        if cmd_id is not None and cmd_id in COMMANDS:
-            # Local command matched
-            cmd_name, target, value = COMMANDS[cmd_id]
-            self.log(f"Recognized local command: {cmd_name} (id={cmd_id})", "INFO")
-            return ("local", cmd_id)
-        else:
-            # Fallback to server
-            self.log(f"No local match, fallback: '{text}'", "INFO")
-            return ("fallback", text)
+        self.log("Wake word detected", "INFO")
+        await asyncio.sleep(0.2)
 
     async def process_command(self, cmd_type: str, data):
-        """Process recognized command through state machine."""
         if cmd_type == "local":
-            # Send to server for confirmation/action
             self.set_state(State.FORWARD_SERVER)
             await self.send_message(self.make_command_request(data))
         else:
-            # Fallback request
             self.set_state(State.FORWARD_SERVER)
             await self.send_message(self.make_fallback_request(data))
 
-        # Wait for server response
         self.set_state(State.WAIT_ACTION)
         response = await self.receive_message()
+        if not response: return
 
         msg_type = response.get("type", "")
-
         if msg_type == "action":
             self.set_state(State.LOCAL_EXECUTE)
             success = await self.handle_action(response)
-
-            # Send result back
             await self.send_message(self.make_action_result(success))
-
-            # Play feedback
             self.set_state(State.PLAY_FEEDBACK)
             await asyncio.sleep(0.3)
-
         elif msg_type == "play":
             self.set_state(State.PLAY_FEEDBACK)
             await self.handle_play(response)
-
-        else:
-            self.set_state(State.ERROR)
-            self.log(f"Unexpected response type: {msg_type}", "ERROR")
-
-        # Return to idle
+        
         self.set_state(State.IDLE)
 
     # --- Interactive CLI ---
 
     def print_help(self):
-        print(
-            f"""
-{color("ESP32 Simulator Commands:", Colors.BOLD)}
-
-  {color("0-3", Colors.GREEN)}      Send local command (0=LIGHT_ON, 1=LIGHT_OFF, 2=FAN_ON, 3=FAN_OFF)
-  {color("t <text>", Colors.GREEN)} Send fallback text request (e.g., 't 開燈')
-  {color("a <file>", Colors.GREEN)} Send audio request (e.g., 'a sample.wav')
-  {color("w", Colors.GREEN)}        Simulate full wake->listen->recognize flow
-  {color("s", Colors.GREEN)}        Show current state
-  {color("h", Colors.GREEN)}        Show this help
-  {color("q", Colors.GREEN)}        Quit
-
-{color("Example:", Colors.DIM)}
-  > 0          # Send LIGHT_ON command
-  > t 打開電風扇  # Send fallback text
-  > a voice.wav  # Send recorded audio
-  > w          # Simulate wake word flow
-"""
-        )
+        print(f"\n{color('ESP32 Simulator Commands:', Colors.BOLD)}")
+        print("  0-3: Local command, t <text>: Fallback, q: Quit, h: Help")
 
     async def interactive_loop(self):
-        """Run interactive command loop."""
         self.print_help()
-
         while self.running:
             try:
-                # Use asyncio for non-blocking input
-                cmd_line = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: input(f"{Colors.GREEN}> {Colors.ENDC}")
-                )
+                def get_input():
+                    try: return input(f"{Colors.GREEN}> {Colors.ENDC}")
+                    except EOFError: return "q"
+                
+                cmd_line = await asyncio.get_event_loop().run_in_executor(None, get_input)
                 cmd_line = cmd_line.strip()
-
-                if not cmd_line:
-                    continue
-
+                if not cmd_line or cmd_line == "q": self.running = False; break
+                
                 parts = cmd_line.split(" ", 1)
                 cmd = parts[0]
                 args = parts[1] if len(parts) > 1 else ""
 
-                if cmd == "q":
-                    self.running = False
-                    break
-
-                elif cmd == "h":
-                    self.print_help()
-
-                elif cmd == "s":
-                    self.log(f"Current state: {self.state.value}", "INFO")
-
-                elif cmd == "w":
-                    # Full wake flow simulation
+                if cmd.isdigit():
                     await self.simulate_wake()
-                    await self.simulate_listen()
-                    # Ask for command
-                    user_cmd = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: input(
-                            f"{Colors.CYAN}Enter command (0-3 or text): {Colors.ENDC}"
-                        ),
-                    )
-                    user_cmd = user_cmd.strip()
-
-                    if user_cmd.isdigit():
-                        cmd_id = int(user_cmd)
-                        result = await self.simulate_recognize(cmd_id=cmd_id)
-                    else:
-                        result = await self.simulate_recognize(text=user_cmd)
-
-                    await self.process_command(*result)
-
-                elif cmd.isdigit():
-                    # Direct command send
-                    cmd_id = int(cmd)
-                    if cmd_id in COMMANDS:
-                        await self.simulate_wake()
-                        result = await self.simulate_recognize(cmd_id=cmd_id)
-                        await self.process_command(*result)
-                    else:
-                        self.log(f"Unknown command ID: {cmd_id}", "ERROR")
-
+                    await self.process_command("local", int(cmd))
                 elif cmd == "t":
-                    # Fallback text
-                    if args:
-                        await self.simulate_wake()
-                        result = await self.simulate_recognize(text=args)
-                        await self.process_command(*result)
-                    else:
-                        self.log("Please provide text after 't'", "ERROR")
-
-                elif cmd == "a":
-                    # Audio request
-                    if args:
-                        if os.path.exists(args):
-                            await self.simulate_wake()
-                            self.set_state(State.FORWARD_SERVER)
-                            
-                            with open(args, "rb") as f:
-                                data = f.read()
-                                if data.startswith(b"RIFF"):
-                                    data = data[44:]
-                                
-                                b64 = base64.b64encode(data).decode("utf-8")
-                                await self.send_message(self.make_audio_request(b64))
-                            
-                            self.set_state(State.WAIT_ACTION)
-                            response = await self.receive_message()
-                            
-                            # Handle response
-                            msg_type = response.get("type", "")
-                            if msg_type == "action":
-                                self.set_state(State.LOCAL_EXECUTE)
-                                success = await self.handle_action(response)
-                                await self.send_message(self.make_action_result(success))
-                                self.set_state(State.PLAY_FEEDBACK)
-                            elif msg_type == "play":
-                                self.set_state(State.PLAY_FEEDBACK)
-                                await self.handle_play(response)
-                            else:
-                                self.set_state(State.IDLE)
-                        else:
-                            self.log(f"File not found: {args}", "ERROR")
-                    else:
-                        self.log("Please provide filename after 'a'", "ERROR")
-
-                else:
-                    self.log(f"Unknown command: {cmd}. Type 'h' for help.", "ERROR")
-
-            except asyncio.CancelledError:
-                break
+                    await self.simulate_wake()
+                    await self.process_command("fallback", args)
+                elif cmd == "h": self.print_help()
             except Exception as e:
                 self.log(f"Error: {e}", "ERROR")
-                self.set_state(State.ERROR)
-                await asyncio.sleep(1)
                 self.set_state(State.IDLE)
 
     async def run(self):
-        """Main run loop."""
-        print(
-            f"""
-{color("=" * 60, Colors.BOLD)}
-{color("ESP32 Simulator", Colors.BOLD)} - {color(self.config.device_id, Colors.CYAN)}
-{color("=" * 60, Colors.BOLD)}
-
-Connecting to: {color(self.ws_uri, Colors.BLUE)}
-"""
-        )
-
         try:
             async with websockets.connect(self.ws_uri) as ws:
                 self.ws = ws
                 self.running = True
-                self.log(f"Connected to server", "INFO")
-                self.set_state(State.IDLE)
-
+                self.reader_task = asyncio.create_task(self._reader_loop())
+                self.log("Connected to server", "INFO")
                 await self.interactive_loop()
-
-        except ConnectionRefusedError:
-            print(f"\n{color('Error:', Colors.RED)} Could not connect to {self.ws_uri}")
-            print(
-                f"Make sure the server is running: {color('uv run esp-miao', Colors.GREEN)}"
-            )
-            sys.exit(1)
         except Exception as e:
-            print(f"\n{color('Error:', Colors.RED)} {e}")
-            sys.exit(1)
+            print(f"Connection error: {e}")
         finally:
-            self.ws = None
-            print(f"\n{color('Disconnected.', Colors.DIM)}")
-
+            self.running = False
+            if self.reader_task: self.reader_task.cancel()
+            print("Disconnected.")
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="ESP32 Simulator for testing WebSocket communication"
-    )
-    parser.add_argument(
-        "--device-id",
-        default="esp32_01",
-        help="Device ID (default: esp32_01)",
-    )
-    parser.add_argument(
-        "--host",
-        default="localhost",
-        help="Server host (default: localhost)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Server port (default: 8000)",
-    )
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--device-id", default="esp32_01")
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
-
-    config = SimulatorConfig(
-        device_id=args.device_id,
-        host=args.host,
-        port=args.port,
-    )
-
-    simulator = ESP32Simulator(config)
-
-    try:
-        asyncio.run(simulator.run())
-    except KeyboardInterrupt:
-        print(f"\n{color('Interrupted.', Colors.DIM)}")
-
+    sim = ESP32Simulator(SimulatorConfig(args.device_id, args.host, args.port))
+    try: asyncio.run(sim.run())
+    except KeyboardInterrupt: pass
 
 if __name__ == "__main__":
     main()

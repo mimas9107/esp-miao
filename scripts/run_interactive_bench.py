@@ -69,8 +69,9 @@ class ExperimentRunner:
         
         print("[*] 正在發送併發請求...")
         # 這裡假設您有測試用的 wav 檔，若無則改用文字 fallback 模擬
-        sim_cmd = "printf 't:開燈\nt:關燈\nt:掃地\nt:回充\nt:開燈\n' | uv run esp32-sim"
+        sim_cmd = "printf 't:開燈\nt:關燈\nt:掃地\nt:回充\nt:開燈\nq\n' | uv run esp32-sim"
         run_command(sim_cmd)
+
         
         print("\n[*] 所有實驗關卡已完成！")
         print_header("產出實驗報告")
