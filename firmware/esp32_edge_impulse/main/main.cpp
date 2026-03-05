@@ -36,6 +36,9 @@
 #include "esp_idf_version.h"
 #include "cJSON.h" // Added back
 #include "mbedtls/base64.h"
+#include <time.h>
+#include <sys/time.h>
+#include "esp_sntp.h"
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 #include "esp_websocket_client.h"
@@ -44,7 +47,44 @@
 /* ---------- Configuration ---------- */
 
 // Removed hardcoded WIFI_SSID and WIFI_PASS, now from NVS/Kconfig
-#define SERVER_URL      "ws://192.168.1.16:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
+#define SERVER_URL      "ws://192.168.1.103:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
+
+/* --- Time & NTP Support --- */
+#define TZ_OFFSET (8 * 3600) // UTC+8
+
+uint64_t get_timestamp_ms() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
+}
+
+void init_ntp() {
+    ESP_LOGI("NTP", "Initializing SNTP...");
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(1, "time.google.com");
+    esp_sntp_init();
+
+    // Set timezone to Taipei (UTC+8)
+    setenv("TZ", "CST-8", 1);
+    tzset();
+
+    // Wait for time to be set
+    int retry = 0;
+    const int retry_count = 10;
+    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count) {
+        ESP_LOGI("NTP", "Waiting for system time to be set... (%d/%d)", retry, retry_count);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    ESP_LOGI("NTP", "Time synchronized: %d-%02d-%02d %02d:%02d:%02d", 
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+}
 
 #define LED_PIN         GPIO_NUM_2
 
@@ -130,7 +170,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "retry to connect to the AP");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "[TS: %llu] got ip:" IPSTR, get_timestamp_ms(), IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -198,14 +238,37 @@ static void handle_server_action(const char *json_str)
     if (!root) return;
 
     cJSON *type = cJSON_GetObjectItem(root, "type");
-    if (type && strcmp(type->valuestring, "action") == 0) {
+    if (!type) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    if (strcmp(type->valuestring, "time_sync") == 0) {
+        cJSON *payload = cJSON_GetObjectItem(root, "payload");
+        if (payload) {
+            long seconds = (long)cJSON_GetObjectItem(payload, "seconds")->valuedouble;
+            int ms = cJSON_GetObjectItem(payload, "ms")->valueint;
+            
+            struct timeval tv = {
+                .tv_sec = seconds,
+                .tv_usec = ms * 1000
+            };
+            settimeofday(&tv, NULL);
+            
+            struct tm timeinfo;
+            localtime_r(&tv.tv_sec, &timeinfo);
+            ESP_LOGI("NTP", "RTC synchronized via Server: %d-%02d-%02d %02d:%02d:%02d",
+                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        }
+    } else if (strcmp(type->valuestring, "action") == 0) {
         cJSON *payload = cJSON_GetObjectItem(root, "payload");
         if (payload) {
             const char *action = cJSON_GetObjectItem(payload, "action")->valuestring;
             const char *target = cJSON_GetObjectItem(payload, "target")->valuestring;
             const char *value = cJSON_GetObjectItem(payload, "value")->valuestring;
 
-            ESP_LOGI(TAG, "Executing Action: %s on %s -> %s", action, target, value);
+            ESP_LOGI(TAG, "[TS: %llu] Executing Action: %s on %s -> %s", get_timestamp_ms(), action, target, value);
 
             int gpio_num = -1;
             // 簡單的映射邏輯 (應與 server 端的 device_table 對應)
@@ -217,14 +280,14 @@ static void handle_server_action(const char *json_str)
                 int level = (strcmp(value, "on") == 0) ? 1 : 0;
                 gpio_set_direction((gpio_num_t)gpio_num, GPIO_MODE_OUTPUT);
                 gpio_set_level((gpio_num_t)gpio_num, level);
-                ESP_LOGI(TAG, "GPIO %d set to %d", gpio_num, level);
+                ESP_LOGI(TAG, "[TS: %llu] GPIO %d set to %d", get_timestamp_ms(), gpio_num, level);
             }
         }
     } else if (type && strcmp(type->valuestring, "play") == 0) {
         cJSON *payload = cJSON_GetObjectItem(root, "payload");
         if (payload) {
             const char *audio = cJSON_GetObjectItem(payload, "audio")->valuestring;
-            ESP_LOGI(TAG, "Server requests playing audio: %s", audio);
+            ESP_LOGI(TAG, "[TS: %llu] Server requests playing audio: %s", get_timestamp_ms(), audio);
             // TODO: 若有喇叭可在此實作播放
         }
     }
@@ -239,7 +302,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
     esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)event_data;
     switch (event_id) {
         case WEBSOCKET_EVENT_CONNECTED:
-            ESP_LOGI(TAG, "WEBSOCKET_EVENT_CONNECTED");
+            ESP_LOGI(TAG, "[TS: %llu] WEBSOCKET_EVENT_CONNECTED", get_timestamp_ms());
             ws_connected = true;
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
@@ -629,8 +692,8 @@ static bool send_audio_stream_b64(const int16_t *audio_data, size_t sample_count
     // 1. Send audio_start
     char start_json[256];
     snprintf(start_json, sizeof(start_json), 
-             "{\"device_id\":\"esp32_01\",\"timestamp\":%lu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f,\"transfer_mode\":\"base64\"}}",
-             (unsigned long)xTaskGetTickCount(), sample_count, confidence);
+             "{\"device_id\":\"esp32_01\",\"timestamp\":%llu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f,\"transfer_mode\":\"base64\"}}",
+             get_timestamp_ms(), sample_count, confidence);
     
     if (esp_websocket_client_send_text(ws_client, start_json, strlen(start_json), portMAX_DELAY) < 0) {
         ws_connected = false;
@@ -669,8 +732,8 @@ static bool send_audio_stream_b64(const int16_t *audio_data, size_t sample_count
 
         bool is_last = (samples_sent + to_send >= sample_count);
         int written = snprintf(json_buffer, b64_max_len + 512,
-                               "{\"device_id\":\"esp32_01\",\"timestamp\":%lu,\"type\":\"audio_chunk\",\"payload\":{\"chunk_index\":%d,\"is_last\":%s,\"data_base64\":\"%s\"}}",
-                               (unsigned long)xTaskGetTickCount(), chunk_idx, is_last ? "true" : "false", b64_buffer);
+                               "{\"device_id\":\"esp32_01\",\"timestamp\":%llu,\"type\":\"audio_chunk\",\"payload\":{\"chunk_index\":%d,\"is_last\":%s,\"data_base64\":\"%s\"}}",
+                               get_timestamp_ms(), chunk_idx, is_last ? "true" : "false", b64_buffer);
 
         if (esp_websocket_client_send_text(ws_client, json_buffer, written, portMAX_DELAY) < 0) {
             ESP_LOGE(TAG, "Failed to send chunk %d", chunk_idx);
@@ -702,8 +765,8 @@ static bool send_audio_stream_binary(const int16_t *audio_data, size_t sample_co
     // 1. Send audio_start (JSON)
     char start_json[256];
     snprintf(start_json, sizeof(start_json), 
-             "{\"device_id\":\"esp32_01\",\"timestamp\":%lu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f,\"transfer_mode\":\"binary\"}}",
-             (unsigned long)xTaskGetTickCount(), sample_count, confidence);
+             "{\"device_id\":\"esp32_01\",\"timestamp\":%llu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f,\"transfer_mode\":\"binary\"}}",
+             get_timestamp_ms(), sample_count, confidence);
     
     if (esp_websocket_client_send_text(ws_client, start_json, strlen(start_json), portMAX_DELAY) < 0) {
         ws_connected = false; // 發送失敗，標記為斷線
@@ -840,7 +903,7 @@ static void inference_task(void *arg)
                 }
                 
                 if (ws_connected && esp_websocket_client_is_connected(ws_client)) {
-                    ESP_LOGI(TAG, "Emergency reconnect SUCCESS.");
+                    ESP_LOGI(TAG, "[TS: %llu] Emergency reconnect SUCCESS.", get_timestamp_ms());
                 } else {
                     ESP_LOGE(TAG, "Emergency reconnect FAILED.");
                 }
@@ -879,8 +942,9 @@ static void inference_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(100));
             
             if (recording_complete && recording_samples > 0) {
-                printf(">>> WAV: Sending %zu samples via WebSocket (%s)...\r\n", 
-                       recording_samples, USE_BINARY_STREAM ? "Binary" : "Base64 Streaming");
+                uint64_t ts = get_timestamp_ms();
+                printf(">>> WAV: Sending %zu samples via WebSocket (%s) at TS: %llu...\r\n", 
+                       recording_samples, USE_BINARY_STREAM ? "Binary" : "Base64 Streaming", ts);
                 
                 bool sent = false;
                 if (USE_BINARY_STREAM) {
@@ -917,6 +981,7 @@ extern "C" int app_main()
 
     setup_led();
     init_wifi();
+    init_ntp(); // 確保 WiFi 連線後同步時間
     init_websocket();
     init_i2s();
     

@@ -235,11 +235,25 @@ class PlayPayload(BaseModel):
     audio: str = Field(..., description="Audio file to play")
 
 
-class Play(BaseMessage):
+class Play(BaseModel):
     """Server sends audio playback command."""
 
     type: Literal["play"] = "play"
     payload: PlayPayload
+
+
+class TimeSyncPayload(BaseModel):
+    """Payload for time synchronization."""
+
+    seconds: int = Field(..., description="Unix Epoch seconds")
+    ms: int = Field(0, description="Millisecond offset")
+
+
+class TimeSync(BaseMessage):
+    """Server sends time synchronization to device."""
+
+    type: Literal["time_sync"] = "time_sync"
+    payload: TimeSyncPayload
 
 
 # --- Type unions for parsing ---
@@ -247,7 +261,8 @@ class Play(BaseMessage):
 ESP32ToServerMessage = Union[
     CommandRequest, FallbackRequest, AudioRequest, ActionResult
 ]
-ServerToESP32Message = Union[Action, Play]
+ServerToESP32Message = Union[Action, Play, TimeSync]
+
 
 
 # --- Device Table ---

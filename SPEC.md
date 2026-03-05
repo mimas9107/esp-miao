@@ -48,7 +48,7 @@ ESP32 (邊緣端)                              Server (伺服器端)
 |------|------|------|
 | `type` | string | 訊息類型（見下方各節定義） |
 | `device_id` | string | 裝置識別碼，例如 `"esp32_01"` |
-| `timestamp` | int | 時間戳記（Unix epoch 毫秒 或 裝置 uptime 毫秒） |
+| `timestamp` | int | 時間戳記（Unix Epoch 毫秒，UTC 基準；顯示時建議使用 UTC+8） |
 | `payload` | object | 依訊息類型而異的承載資料 |
 
 ---
@@ -179,6 +179,22 @@ ESP32 回報動作執行結果：
 ---
 
 ### 1.3 Server → ESP32
+
+#### Time Sync
+
+Server 指示 ESP32 同步時間（通常在連線時發送）：
+
+```json
+{
+  "type": "time_sync",
+  "device_id": "server",
+  "timestamp": 1709366400000,
+  "payload": {
+    "seconds": 1709366400,
+    "ms": 0
+  }
+}
+```
 
 #### Action
 

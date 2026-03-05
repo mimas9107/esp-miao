@@ -31,6 +31,8 @@ from .models import (
     FallbackRequest,
     Play,
     PlayPayload,
+    TimeSync,
+    TimeSyncPayload,
     ALLOWED_ACTIONS,
 )
 
@@ -973,6 +975,20 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
     """WebSocket endpoint for ESP32 communication."""
     await manager.connect(device_id, websocket)
 
+    # --- 握手即同步 (Miao-Sync) ---
+    # 當裝置連線時，立即發送伺服器當前時間，確保離線環境下時間一致
+    now = time.time()
+    sync_msg = TimeSync(
+        device_id="server",
+        timestamp=int(now * 1000),
+        payload=TimeSyncPayload(
+            seconds=int(now),
+            ms=int((now - int(now)) * 1000)
+        )
+    )
+    await websocket.send_text(json.dumps(sync_msg.model_dump()))
+    logger.info(f"Sent TimeSync to {device_id}")
+
     try:
         while True:
             # Receive either text or bytes
@@ -985,11 +1001,12 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
 
             if "text" in message:
                 raw_msg = message["text"]
-                logger.debug(f"Received TEXT from {device_id}: {raw_msg}")
-
                 try:
                     data = json.loads(raw_msg)
                     msg_type = data.get("type")
+                    dev_ts = data.get("timestamp", 0)
+                    
+                    logger.debug(f"Received TEXT from {device_id} (TS: {dev_ts}): {raw_msg}")
 
                     response = None
                     if msg_type == "command_request":

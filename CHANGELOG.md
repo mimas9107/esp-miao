@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8] - 2026-03-05
+
+### Added (Time Synchronization & Observability)
+- **Miao-Sync Protocol (WebSocket 時間同步)**
+  - 實作了 Server 到 ESP32 的 `time_sync` 訊息。
+  - 裝置在 WebSocket 連線成功後會立即收到伺服器當前 Unix Epoch 並校正 RTC。
+  - 解決了離線環境或 NTP 失效導致的時間斷層問題。
+- **Unified Timestamp (時間戳記統一)**
+  - 全專案通訊協議統一使用 Unix Epoch 毫秒 (UTC 基準)。
+  - ESP32 端將訊息傳輸用的 `timestamp` 從 Uptime 毫秒更換為校正後的 Unix 毫秒。
+- **Enhanced Logging (日誌透明度強化)**
+  - ESP32 所有關鍵日誌 (Action, GPIO, Play) 均加入 `[TS: %llu]` 絕對時間標記。
+  - Server 端日誌同步輸出設備帶來的時間戳記，便於分析網路與處理延遲。
+
 ## [0.4.7] - 2026-03-04
 
 ### Added (Cross-Project Integration & Robustness)

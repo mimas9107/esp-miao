@@ -96,8 +96,38 @@ void setState(State newState) {
   currentState = newState;
 }
 
-unsigned long getTimestamp() {
-  return millis();
+void syncNTP() {
+  Serial.print("[NTP] Synchronizing time");
+  // UTC+8: 8 * 3600 = 28800
+  configTime(28800, 0, "pool.ntp.org", "time.google.com");
+  
+  struct tm timeinfo;
+  int retry = 0;
+  while (!getLocalTime(&timeinfo) && retry < 10) {
+    Serial.print(".");
+    delay(1000);
+    retry++;
+  }
+  
+  if (retry < 10) {
+    Serial.println(" Success!");
+    char timeStr[64];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    Serial.printf("[NTP] Current time: %s\n", timeStr);
+  } else {
+    Serial.println(" Failed! Using uptime as fallback.");
+  }
+}
+
+unsigned long long getTimestamp() {
+  time_t now;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    // Fallback to millis if NTP sync failed or not yet available
+    return millis();
+  }
+  time(&now);
+  return (unsigned long long)now * 1000;
 }
 
 // ==================== GPIO 控制 ====================
@@ -216,7 +246,23 @@ void handleServerMessage(uint8_t* payload, size_t length) {
   const char* type = doc["type"];
   Serial.printf("[RECV] type=%s\n", type);
   
-  if (strcmp(type, "action") == 0) {
+  if (strcmp(type, "time_sync") == 0) {
+    long seconds = doc["payload"]["seconds"];
+    int ms = doc["payload"]["ms"];
+    
+    struct timeval tv = {
+      .tv_sec = seconds,
+      .tv_usec = ms * 1000
+    };
+    settimeofday(&tv, NULL);
+    
+    struct tm timeinfo;
+    getLocalTime(&timeinfo);
+    char timeStr[64];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    Serial.printf("[NTP] RTC synchronized via Server: %s\n", timeStr);
+
+  } else if (strcmp(type, "action") == 0) {
     // 處理 action 指令
     setState(STATE_LOCAL_EXECUTE);
     
@@ -319,7 +365,7 @@ void sendCommandRequest(int cmdId) {
   
   setState(STATE_FORWARD_SERVER);
   String msg = buildCommandRequest(cmdId, 0.95);
-  Serial.printf("[SEND] %s\n", msg.c_str());
+  Serial.printf("[SEND] %s (TS: %llu)\n", msg.c_str(), getTimestamp());
   webSocket.sendTXT(msg);
   
   setState(STATE_WAIT_ACTION);
@@ -341,7 +387,7 @@ void sendFallbackRequest(const char* text) {
   
   setState(STATE_FORWARD_SERVER);
   String msg = buildFallbackRequest(text);
-  Serial.printf("[SEND] %s\n", msg.c_str());
+  Serial.printf("[SEND] %s (TS: %llu)\n", msg.c_str(), getTimestamp());
   webSocket.sendTXT(msg);
   
   setState(STATE_WAIT_ACTION);
@@ -460,6 +506,9 @@ void setup() {
   setupWiFi();
   
   if (WiFi.status() == WL_CONNECTED) {
+    // 同步時間
+    syncNTP();
+
     // 連接 WebSocket
     Serial.printf("[WS] Connecting to ws://%s:%d/ws/%s\n", 
                   SERVER_HOST, SERVER_PORT, DEVICE_ID);
