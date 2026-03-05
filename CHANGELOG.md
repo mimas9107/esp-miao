@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9] - 2026-03-05
+
+### Added (System Observability)
+- **Metrics Subsystem (數據觀測系統)**
+  - 實作了非同步的 metrics 收集模組 (`src/esp_miao/metrics/`)，對主流程 (ASR/LLM/MQTT) 進行低開銷埋點。
+  - **Metrics Context**: 追蹤每個請求的完整生命週期，紀錄 ASR 耗時、LLM 耗時、關鍵字命中率與派發結果。
+  - **Async Logger**: 使用 Background Thread + Queue 寫入 `metrics.jsonl`，確保不阻塞 WebSocket 響應。
+  - **Analysis Tool**: 新增 `scripts/analyze_metrics.py`，可一鍵生成延遲分布、錯誤率與邏輯分支佔比報告。
+
 ## [0.4.8] - 2026-03-05
 
 ### Added (Time Synchronization & Observability)

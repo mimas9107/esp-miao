@@ -42,6 +42,7 @@ import os
 import httpx
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
+from .metrics import init_metrics, shutdown_metrics, metrics_logger, aggregator, MetricsContext
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -214,16 +215,19 @@ def on_connect(client, userdata, flags, rc, properties):
     else:
         logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
 
-async def dispatch_command(target: str, value: str):
+async def dispatch_command(target: str, value: str, metrics_ctx: Optional[MetricsContext] = None):
     """通用指令派發器，支援 MQTT 與 HTTP API。"""
     device = device_table.get_device(target)
     if not device:
         logger.warning(f"Attempted to control unregistered device: {target}")
+        if metrics_ctx: metrics_ctx.set_error("unregistered_device")
         return
 
     # 決定發送方式：API 優先，MQTT 為輔
     if device.api_url:
         # HTTP API 模式 (針對 myxiaomi 等已有服務的專案)
+        if metrics_ctx: metrics_ctx.mark_stage("dispatch_type", "http_api")
+        
         cmd_payload = device.commands.get(value.lower(), value)
         logger.info(f"HTTP API Call: [{device.api_url}] -> cmd={cmd_payload} (for {target})")
         
@@ -238,13 +242,18 @@ async def dispatch_command(target: str, value: str):
                 response = await client.post(device.api_url, json=payload)
                 if response.status_code == 200:
                     logger.info(f"HTTP Success: {response.json()}")
+                    if metrics_ctx: metrics_ctx.set_flag("dispatch_success", True)
                 else:
                     logger.error(f"HTTP Error {response.status_code}: {response.text}")
+                    if metrics_ctx: metrics_ctx.set_error(f"http_error_{response.status_code}")
         except Exception as e:
             logger.error(f"HTTP Request failed for {target}: {e}")
+            if metrics_ctx: metrics_ctx.set_error("http_exception")
     
     else:
         # MQTT 模式 (針對嵌入式裸機)
+        if metrics_ctx: metrics_ctx.mark_stage("dispatch_type", "mqtt")
+        
         topic = device.control_topic if device.control_topic else MQTT_TOPIC
         commands = device.commands if device.commands else {"on": "ON", "off": "OFF"}
         cmd_payload = commands.get(value.lower(), value.upper())
@@ -253,10 +262,13 @@ async def dispatch_command(target: str, value: str):
             result = mqtt_client.publish(topic, cmd_payload)
             if result.rc == 0:
                 logger.info(f"MQTT Publish: [{topic}] -> {cmd_payload} (for {target})")
+                if metrics_ctx: metrics_ctx.set_flag("dispatch_success", True)
             else:
                 logger.error(f"Failed to publish MQTT command for {target} (rc={result.rc})")
+                if metrics_ctx: metrics_ctx.set_error(f"mqtt_error_rc{result.rc}")
         except Exception as e:
             logger.error(f"MQTT Publish Error for {target}: {e}")
+            if metrics_ctx: metrics_ctx.set_error("mqtt_exception")
 
 # --- Action Validator (Safety) ---
 action_validator = ActionValidator(device_table)
@@ -502,7 +514,7 @@ def extract_intent_from_text(text: str) -> dict:
     return {"action": "unknown", "target": "", "value": ""}
 
 
-def parse_intent_with_llm(text: str) -> dict:
+def parse_intent_with_llm(text: str, metrics_ctx: Optional[MetricsContext] = None) -> dict:
     """Use Ollama LLM to parse natural language intent with dynamic device list."""
     current_devices = [d.name for d in device_table.devices]
 
@@ -510,18 +522,27 @@ def parse_intent_with_llm(text: str) -> dict:
     keyword_intent = extract_intent_from_text(text)
     logger.debug(f"Keyword extraction: {text} -> {keyword_intent}")
     
+    # 記錄關鍵字命中
+    if metrics_ctx:
+        metrics_ctx.set_flag("keyword_action_found", keyword_intent["action"] != "unknown")
+        metrics_ctx.set_flag("keyword_target_found", keyword_intent["target"] != "")
+    
     # --- 優先攔截邏輯 (Priority Logic) ---
     # 如果關鍵字已經能明確識別出目標與動作，直接返回，跳過 LLM 以降低延遲
     if keyword_intent["action"] != "unknown" and keyword_intent["target"] in current_devices:
         logger.info(f"Priority Logic: Keyword match successful for '{text}', skipping LLM.")
+        if metrics_ctx: metrics_ctx.set_flag("llm_called", False)
         return keyword_intent
 
     # 如果內容完全沒提到裝置名稱且關鍵字解析失敗，不送 LLM，直接回傳 unknown
     if keyword_intent["target"] == "" and keyword_intent["action"] == "unknown":
         logger.info(f"Pre-filter: No devices found in '{text}', skipping LLM.")
+        if metrics_ctx: metrics_ctx.set_flag("llm_called", False)
         return keyword_intent
 
     # 方案 B: 動態 LLM Prompt
+    if metrics_ctx: metrics_ctx.set_flag("llm_called", True)
+    
     prompt = f"""Task: Convert voice command to JSON.
 Available devices: {current_devices}
 
@@ -534,7 +555,10 @@ Response in ONE LINE JSON format ONLY:
 """
 
     try:
+        t_llm = time.time()
         response = ollama.generate(model="qwen2.5:0.5b", prompt=prompt)
+        if metrics_ctx: metrics_ctx.record_latency("llm_inference_latency", round(time.time() - t_llm, 3))
+        
         result_text = response["response"]
 
         # Extract JSON from response
@@ -557,6 +581,7 @@ Response in ONE LINE JSON format ONLY:
                 logger.warning(f"LLM disagreed with keywords, prioritizing keywords: {keyword_intent}")
                 return keyword_intent
 
+        if metrics_ctx: metrics_ctx.set_flag("llm_success", True)
         return result
 
     except Exception as e:
@@ -707,6 +732,10 @@ async def process_complete_audio(
     device_id: str, audio_base64: str, audio_format: str, confidence: Optional[float] = None
 ) -> dict:
     """Core audio processing pipeline (ASR + LLM)."""
+    # 1. Start Metrics Context
+    request_id = f"{device_id}_{int(time.time()*1000)}"
+    metrics_ctx = MetricsContext(request_id, device_id)
+    
     try:
         # Decode base64 audio
         audio_bytes = base64.b64decode(audio_base64)
@@ -753,11 +782,20 @@ async def process_complete_audio(
             logger.debug("Skipping audio debug file save (DEBUG_AUDIO_SAVE=0)")
 
         # --- 啟動 ASR (Faster-Whisper) ---
+        t0 = time.time()
         text = await transcribe_audio(audio_base64, audio_format)
+        metrics_ctx.record_latency("asr_latency", round(time.time() - t0, 3))
+        metrics_ctx.mark_stage("asr_text", text)
+        metrics_ctx.mark_stage("asr_text_length", len(text))
         
         if not text:
+            metrics_ctx.set_flag("asr_empty", True)
             logger.info(f"ASR result is empty (Silence/Noise), skipping intent parsing for {device_id}")
             await play_local_sound("not_understood.wav")
+            
+            # Record & Return
+            metrics_logger.log(metrics_ctx.finalize())
+            aggregator.record(metrics_ctx)
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -767,10 +805,15 @@ async def process_complete_audio(
         logger.info(f"ASR result: {text}")
 
         # Parse intent with LLM (Will fallback to Keywords if clear match)
-        intent = parse_intent_with_llm(text)
+        t1 = time.time()
+        intent = parse_intent_with_llm(text, metrics_ctx) # 需要修改此函式簽名
+        metrics_ctx.record_latency("intent_latency", round(time.time() - t1, 3))
 
         if intent.get("action") == "unknown":
             await play_local_sound("not_understood.wav")
+            # Record & Return
+            metrics_logger.log(metrics_ctx.finalize())
+            aggregator.record(metrics_ctx)
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
@@ -781,18 +824,34 @@ async def process_complete_audio(
         action = intent.get("action", "relay_set")
         target = intent.get("target", "")
         value = intent.get("value", "")
+        
+        metrics_ctx.mark_stage("final_action", action)
+        metrics_ctx.mark_stage("final_target", target)
+        metrics_ctx.mark_stage("final_value", value)
 
         is_valid, error = action_validator.validate(action, target, value)
         if not is_valid:
+            metrics_ctx.set_flag("validator_pass", False)
+            metrics_ctx.mark_stage("reject_reason", error)
             await play_local_sound("error.wav")
+            
+            metrics_logger.log(metrics_ctx.finalize())
+            aggregator.record(metrics_ctx)
             return Play(
                 device_id=device_id,
                 timestamp=int(time.time() * 1000),
                 payload=PlayPayload(audio="error.wav"),
             ).model_dump()
+            
+        metrics_ctx.set_flag("validator_pass", True)
 
         await play_local_sound(get_action_sound(target, value))
-        await dispatch_command(target, value)
+        await dispatch_command(target, value, metrics_ctx)
+        
+        # Record Success
+        metrics_logger.log(metrics_ctx.finalize())
+        aggregator.record(metrics_ctx)
+        
         return Action(
             device_id=device_id,
             timestamp=int(time.time() * 1000),
@@ -806,6 +865,9 @@ async def process_complete_audio(
 
     except Exception as e:
         logger.error(f"Processing failed: {e}")
+        metrics_ctx.set_error(str(e))
+        metrics_logger.log(metrics_ctx.finalize())
+        aggregator.record(metrics_ctx)
         return Play(
             device_id=device_id,
             timestamp=int(time.time() * 1000),
@@ -898,9 +960,15 @@ async def lifespan(app: FastAPI):
     # Ensure audio directory exists
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     
+    # Start Metrics Logger
+    init_metrics()
+    
     yield
     
     logger.info("ESP-MIAO Server shutting down...")
+    # Stop Metrics Logger
+    shutdown_metrics()
+    
     # Gracefully stop MQTT
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
