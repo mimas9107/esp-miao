@@ -77,9 +77,10 @@ Mic (INMP441) → ESP32 (Edge Impulse)
 ### 3.3 範例參考
 *   **Arduino 版**：請參考 `./mqtt_for_esp32/` 子專案中的範例代碼，已內建 `sendDiscoveryMessage()` 實作。
 
-### 3.4 伺服器維護
+### 3.4 伺服器維護與反饋
 *   **查看狀態**：`GET /` (回傳在線裝置數與 ID)
 *   **列出裝置**：`GET /devices`
+*   **喚醒提示音**：`GET /ack` (播放伺服器端喚醒反饋音)
 *   **安全關閉**：`GET /shutdown` (觸發 Graceful Shutdown 並釋放 MQTT 資源)
 
 ---

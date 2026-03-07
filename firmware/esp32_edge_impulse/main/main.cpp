@@ -43,11 +43,13 @@
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 #include "esp_websocket_client.h"
 #endif
+#include "esp_http_client.h"
 
 /* ---------- Configuration ---------- */
 
 // Removed hardcoded WIFI_SSID and WIFI_PASS, now from NVS/Kconfig
-#define SERVER_URL      "ws://192.168.1.103:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
+#define SERVER_URL      "ws://192.168.1.16:8000/ws/esp32_01" // Still hardcoded for now, could also be NVS/Kconfig
+#define ACK_URL         "http://192.168.1.16:8000/ack"
 
 /* --- Time & NTP Support --- */
 #define TZ_OFFSET (8 * 3600) // UTC+8
@@ -84,6 +86,29 @@ void init_ntp() {
     ESP_LOGI("NTP", "Time synchronized: %d-%02d-%02d %02d:%02d:%02d", 
              timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+}
+
+/* --- ACK Sound Support --- */
+void send_ack_request() {
+    esp_http_client_config_t config = {};
+    config.url = ACK_URL;
+    config.method = HTTP_METHOD_GET;
+    config.timeout_ms = 600; // 快速逾時，避免錄音延遲
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE("ACK", "Failed to initialize HTTP client");
+        return;
+    }
+
+    esp_err_t err = esp_http_client_perform(client);
+    if (err == ESP_OK) {
+        ESP_LOGI("ACK", "Sent successfully, status_code=%d", (int)esp_http_client_get_status_code(client));
+    } else {
+        ESP_LOGE("ACK", "HTTP GET failed: %s", esp_err_to_name(err));
+    }
+
+    esp_http_client_cleanup(client);
 }
 
 #define LED_PIN         GPIO_NUM_2
@@ -909,6 +934,9 @@ static void inference_task(void *arg)
                 }
             }
             // -------------------------------------
+
+            // --- 發送喚醒提示音請求 (v0.5.0) ---
+            send_ack_request();
 
             for (int k = 0; k < 3; k++) {
                 gpio_set_level(LED_PIN, 1);

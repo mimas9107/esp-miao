@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-05
+
+### Added (User Experience)
+- **Wake Word ACK Sound (喚醒提示音反饋)**
+  - 實作了 ESP32 在偵測到喚醒詞後，主動發送 HTTP GET 請求至 `/ack`。
+  - 此舉讓伺服器能立即播放喚醒提示音，提供使用者即時的語音反饋。
+  - **Non-blocking Implementation**: 採用快速逾時機制，確保 HTTP 請求不影響隨後的語音捕捉與錄製。
+
 ## [0.4.9] - 2026-03-05
 
 ### Added (System Observability)
