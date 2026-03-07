@@ -90,6 +90,7 @@ async def play_local_sound(filename: str):
         return
 
     sound_path = LOCAL_SOUND_DIR / filename
+    print(sound_path)
     if not sound_path.exists():
         logger.warning(f"Local sound file not found: {sound_path}")
         return
@@ -1035,6 +1036,14 @@ async def list_audio():
         return {"files": []}
     files = [f.name for f in AUDIO_DIR.glob("*.wav")]
     return {"files": files}
+
+@app.get("/ack")
+async def ack():
+    """Ack reply after wake up. """
+    print(LOCAL_SOUND_DIR)
+    await play_local_sound("ack.wav")
+    return {"status": "ack"}
+
 
 
 # --- WebSocket Endpoint ---
