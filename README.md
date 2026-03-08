@@ -1,51 +1,47 @@
-# ESP32 Voice Agent Project 
-## Project id: ESP-MIAO
+# ESP-MIAO (智慧語音控制系統)
 
-本專案目標是在 **ESP32 Dev Kit v1** 上實作一個本地語音控制代理，使用 **Edge Impulse MFCC 模型** 進行喚醒詞偵測，搭配 **Local Server + Ollama LLM**，打造一個低延遲、可擴充、工程化的語音控制系統。
-
-ESP32 負責語音感知與硬體控制，Server 負責語意理解與跨裝置協調。
-
----
-
-## 1. Project Goals
-
-* 在 ESP32 上實作 Always-on Wake Word（嘿喵喵）。
-* 使用 Edge Impulse TFLite 模型進行本地喚醒詞推論。
-* 對於複雜語意交由 Server + Ollama LLM 解析。
-* 建立 JSON Protocol 作為事件傳遞格式。
-* 支援 Relay、伺服器端本地音效播放 (aplay) 與未來 IoT 擴充。
-* 提供特定動作音效對應（如開燈/關燈專屬音效）。
+> **Version: 0.5.1**
+> 
+> 本專案為一個基於 ESP32 的智慧語音控制系統，透過語音喚醒詞 "heymiaomiao" 觸發後，將音訊傳送至伺服器進行 ASR 與 LLM 意圖解析，並透過 MQTT 控制 IoT 裝置。
 
 ---
 
-## 2. System Architecture
+## 1. 系統架構 (Architectural Roles)
 
+*   **ESP32 (邊緣端)**:
+    - 負責本地端 VAD 喚醒 (辨識 "heymiaomiao")。
+    - 觸發後錄製 3 秒音訊，透過 WebSocket 傳送二進位流至伺服器。
+    - **注意**: ESP32 不負責任何 MQTT 指令發送或邏輯判斷。
+
+*   **Server (伺服器端)**:
+    - 採用 **FastAPI 模組化架構** (v0.5.1 重構完成)。
+    - **`audio.py`**: ASR 轉錄 (faster-whisper)。
+    - **`intent.py`**: LLM 意圖解析 (Ollama qwen2.5) + 關鍵字攔截。
+    - **`dispatch.py`**: 指令派發 (MQTT / HTTP API)。
+    - **`connection.py`**: 設備管理與 WebSocket/MQTT 連線池。
+    - **`config.py`**: 統一環境變數與資源調度。
+
+---
+
+## 2. 快速開始 (Quick Start)
+
+### 2.1 伺服器端 (Server)
+本專案使用 `uv` 進行套件管理。
+
+```bash
+# 安裝依賴
+uv sync
+
+# 啟動伺服器
+uv run esp-miao
 ```
-User
- ↓
-Mic (INMP441) → ESP32 (Edge Impulse)
-                 ├─ MFCC Feature Extraction
-                 ├─ TFLite Inference (heymiaomiao)
-                 ├─ FFT VAD Gate
-                 └─ Audio Streamer (Binary / Base64)
-                      ↓
-                   Server (Python FastAPI)
-                     ├─ WebSocket Handler & Audio Reassembler
-                     ├─ ASR (faster-whisper)
-                     ├─ LLM Intent Parser (Ollama, Dynamic Prompt)
-                     ├─ Device Dynamic Registry (Discovery Listener)
-                     └─ MQTT Dispatcher (paho-mqtt)
-                      ↓
-               ┌──────┴──────┐
-        Board A (GPIO)   Board B/C (MQTT)
-         (Local Relay)    (Smart Light/Fan)
+
+### 2.2 模擬器 (Simulator)
+用於在沒有硬體的情況下測試伺服器邏輯。
+
+```bash
+uv run esp32-sim
 ```
-
-設計原則：
-
-* **ESP32 (Wake Word)**: 專注於即時感官任務與音訊傳輸，資源利用最大化。
-* **Server (Gateway)**: 承擔語意解析、決策制訂與跨裝置協議翻譯 (WebSocket to MQTT)。
-* **Control Board**: 以隨插即用 (Plug & Play) 模式註冊並執行指令。
 
 ---
 
@@ -69,336 +65,58 @@ Mic (INMP441) → ESP32 (Edge Impulse)
 }
 ```
 
-### 3.2 運作機制
-1. **Server 監聽**：伺服器啟動後訂閱 `home/discovery`。
-2. **自動映射**：伺服器收到 JSON 後，會自動將 `aliases` 填入語音解析地圖，並通知 LLM 現在有新設備 `fan_kitchen` 可供調度。
-3. **無縫控制**：當您對著喚醒板說「嘿喵喵，打開抽風機」，伺服器會解析出目標為 `fan_kitchen` 並向 `home/fan/cmd` 發布 `"FAN_ON"`。
+---
 
-### 3.3 範例參考
-*   **Arduino 版**：請參考 `./mqtt_for_esp32/` 子專案中的範例代碼，已內建 `sendDiscoveryMessage()` 實作。
+## 4. 開發日誌與規範 (Development & Sync)
 
-### 3.4 伺服器維護與反饋
-*   **查看狀態**：`GET /` (回傳在線裝置數與 ID)
-*   **列出裝置**：`GET /devices`
-*   **喚醒提示音**：`GET /ack` (播放伺服器端喚醒反饋音)
-*   **安全關閉**：`GET /shutdown` (觸發 Graceful Shutdown 並釋放 MQTT 資源)
+### 4.1 開發日誌 (Logs)
+本專案遵循嚴格的開發記錄規範，所有重大更動需記錄於 `./develop_journal/YYYY-MM-DD/`：
+- `PLAN.md`: 當日執行計畫。
+- `TODO.md`: 詳細任務清單與完成進度。
+- `NOTES.md`: 技術要點與決策記錄。
+- `REVIEW_TODO.md`: 項目完成後的審查清單。
+
+### 4.2 版本追蹤 (Versioning)
+- **SSOT**: `CHANGELOG.md` 為版本號的唯一事實來源。
+- **Sync**: 更新版本時必須同步更新 `pyproject.toml`, `version.py` 及 `SPEC.md`。
 
 ---
 
-## 4. Hardware
-
-### 3.1 硬體需求
-
-* ESP32 DevKit V1 (WROOM, 無 PSRAM)
-* INMP441 I2S MEMS 麥克風模組
-
-### 3.2 接線
-
-| INMP441 Pin | ESP32 GPIO | 說明 |
-| :--- | :--- | :--- |
-| **SCK / BCLK** | **GPIO 32** | Bit Clock |
-| **WS / LRCL** | **GPIO 25** | Word Select (Frame Clock) |
-| **SD / DIN** | **GPIO 33** | Serial Data In |
-| **L/R** | **GND** | 設定為左聲道 (Left Channel) |
-| **VDD** | **3.3V** | 電源 |
-| **GND** | **GND** | 接地 |
-
----
-
-## 4. Edge Impulse Wake Word Detection
-
-### 4.1 模型資訊
-
-| 參數 | 值 |
-| :--- | :--- |
-| Project | esp-miao-mfcc (ID: 905178) |
-| 採樣率 | 16000 Hz |
-| 視窗大小 | 1000 ms (16000 samples) |
-| 推論切片 | 250 ms × 4 slices |
-| 分類 | `heymiaomiao`, `noise`, `unknown` |
-| 閾值 | 0.85 (模型) + 25000 (FFT VAD) |
-| DSP | MFCC (512 FFT, 32 filters, 13 cepstral) |
-| 推論引擎 | TFLite (EON Compiled, INT8 量化) |
-
-### 4.2 I2S 驅動策略
-
-ESP32 V1 的 I2S 硬體在 Mono 模式下容易出現數據錯位。本專案採取：
-
-1. **強制 Stereo 模式** — 設定為 `I2S_SLOT_MODE_STEREO`
-2. **軟體左聲道提取** — 讀取雙聲道數據，手動取偶數索引 (Left)
-3. **APLL 時鐘** — 啟用 `I2S_CLK_SRC_APLL` 確保精確 16kHz
-4. **數據位移** — INMP441 輸出 24-bit 左對齊，以 `>> 11` 標準化為 16-bit 範圍
-
-### 4.3 FFT VAD (Voice Activity Detection)
-
-為了提升噪音抗性，v0.4.4 引入了 **FFT 頻域能量分析**。系統僅計算 **300Hz ~ 3400Hz** (人聲核心頻帶) 的能量，有效過濾了低頻底噪與高頻環境噪音。
-
-| 環境 | FFT 能量 (300-3400Hz) | 狀態 |
-| :--- | :--- | :--- |
-| 安靜環境 | 700 ~ 1500 | 攔截 |
-| 遠處背景音 | 3000 ~ 6000 | 攔截 |
-| **FFT 閾值 (Gate)** | **25000** | **開門** |
-| 喚醒詞 (1~3公尺) | 40000 ~ 70000 | 觸發 |
-
-**優點：** 相比傳統 RMS，FFT VAD 在遠場識別更穩定，且對於冷氣運轉、風扇聲等非人聲持續音有極佳的抑制效果。
-
-### 4.4 WebSocket 連線魯棒性與自動恢復 (Robustness v0.4.5)
-
-為了應對伺服器重啟或網路閃斷，本系統在韌體端實作了三層防禦機制：
-
-1. **心跳探測 (Keep-alive)**: 每 5 秒發送一次 WebSocket Ping，主動探測伺服器是否仍然在線。
-2. **狀態校驗 (Connection Guard)**: 在每次音訊發送前，會主動確認連線狀態。若發送失敗，將立即標記斷線並觸發背景自動重連。
-3. **緊急重連 (Emergency Reconnect)**: 在偵測到喚醒詞時，若發現連線失效，系統會強制重啟 WebSocket 客戶端 (Stop -> Start)，並提供 2 秒的黃金恢復視窗，大幅提升伺服器重啟後的通訊恢復機率。
-
-### 4.5 編譯與燒錄
-
-```bash
-cd firmware/esp32_edge_impulse
-
-# 設定 ESP-IDF 環境
-. $HOME/esp/esp-idf/export.sh
-
-# 編譯
-idf.py build
-
-# 燒錄並監控
-idf.py -p /dev/ttyUSB0 flash monitor
-```
-
-偵測成功時，Serial Monitor 顯示 `>>> WAKE WORD DETECTED! <<<`，藍色 LED (GPIO 2) 閃爍三次。
-
----
-
-## 5. Responsibility Split
-
-| Layer  | Responsibility                                           |
-| ------ | -------------------------------------------------------- |
-| ESP32  | Wake word (Edge Impulse), I2S audio, WiFi/WS client, GPIO control (relay, LED) |
-| Server | Audio reassembly, ASR (faster-whisper), LLM intent (Ollama), device table, routing, logging |
-| LLM    | JSON intent mapping only                                 |
-
----
-
-## 6. JSON Protocol Design
-
-### 6.1 ESP32 → Server (Audio Streaming)
-
-ESP32 會先發送 `audio_start` 訊息，告知伺服器即將開始音訊串流，包含總採樣數。
-```json
-{
-  "device_id": "esp32_01",
-  "timestamp": 123456789,
-  "type": "audio_start",
-  "payload": {
-    "audio_format": "pcm_16k_16bit",
-    "transfer_mode": "binary",  // 或 "base64"
-    "total_samples": 48000,
-    "confidence": 0.85
-  }
-}
-```
-
-隨後，ESP32 根據 `transfer_mode` 選擇傳輸方式：
-
-*   **Binary 模式 (推薦)**：ESP32 將原始 PCM 音訊直接以二進位訊框 (Binary Frame) 分塊傳送。伺服器累積位元組直到達標後自動處理。此模式節省 **33%** 頻寬且 CPU 開銷極低。
-*   **Base64 模式**：ESP32 將音訊切割成多個 4KB 的區塊，並以 Base64 編碼，分次發送 `audio_chunk` 訊息。
-
-```json
-{
-  "device_id": "esp32_01",
-  "timestamp": 123456790,
-  "type": "audio_chunk",
-  "payload": {
-    "chunk_index": 0,
-    "is_last": false,
-    "data_base64": "..."
-  }
-}
-```
-當 `is_last` 為 `true` (或 Binary 模式下位元組達標) 時，伺服器會將所有區塊組裝成完整的音訊檔進行 ASR 和 LLM 處理。
-
-### 6.2 Server → ESP32 (Action / Play)
-
-伺服器處理完意圖後，會根據結果回傳 `action` 或 `play` 訊息。
-
-**Action 訊息 (控制硬體):**
-```json
-{
-  "device_id": "esp32_01",
-  "timestamp": 123456800,
-  "type": "action",
-  "payload": {
-    "action": "relay_set",
-    "target": "light",
-    "value": "on",
-    "sound": "success.wav"
-  }
-}
-```
-ESP32 將解析此訊息，並根據 `action`、`target`、`value` 控制對應的 GPIO。
-
-**Play 訊息 (播放音效):**
-```json
-{
-  "device_id": "esp32_01",
-  "timestamp": 123456801,
-  "type": "play",
-  "payload": {
-    "audio": "not_understood.wav"
-  }
-}
-```
-ESP32 目前僅會記錄此訊息，未來可擴充播放功能。
-
-### 6.3 ESP32 → Server (Action Result)
-
-ESP32 執行完 `action` 後，會回傳 `action_result` 告知伺服器執行結果。
-
-```json
-{
-  "device_id": "esp32_01",
-  "timestamp": 123456810,
-  "type": "action_result",
-  "payload": {
-    "status": "success",
-    "error": null
-  }
-}
-```
-
----
-
-## 7. Device Table + LLM
-
-Server 維護裝置表：
-
-```json
-{
-  "devices": [
-    {"name": "light", "type": "relay", "gpio": 26},
-    {"name": "fan", "type": "relay", "gpio": 27},
-    {"name": "led", "type": "led", "gpio": 2}
-  ]
-}
-```
-
-LLM Prompt 設計範例 (用於 `qwen2.5:0.5b`)：
-
-```
-Task: Convert voice command to JSON.
-Available devices: light, fan, led
-
-Examples:
-- Command: "幫我開燈" -> {"action": "relay_set", "target": "light", "value": "on"}
-- Command: "關掉風扇" -> {"action": "relay_set", "target": "fan", "value": "off"}
-
-Command: "用戶語音指令"
-Response in ONE LINE JSON format ONLY:
-```
-
----
-
-## 8. ESP32 State Machine
-
-```
-IDLE
- → WAKE (Edge Impulse: heymiaomiao detected)
- → LISTEN (3秒錄音)
- → FORWARD_SERVER (傳輸音訊串流)
- → WAIT_ACTION (等待伺服器指令)
- → LOCAL_EXECUTE (解析 JSON 並控制 GPIO) | PLAY_FEEDBACK (播放音效)
- → IDLE
-```
-
----
-
-## 9. Project Structure
+## 5. Project Structure
 
 ```
 esp-miao/
 ├── firmware/
 │   ├── esp32_edge_impulse/      # Edge Impulse 喚醒詞 (主要)
-│   │   ├── main/main.cpp        #   主程式 (新增 WebSocket 連線, Audio Streaming, cJSON 解析, GPIO 控制)
-│   │   ├── main/CMakeLists.txt  #   ESP-IDF build (新增 json, esp_websocket_client 等依賴)
-│   │   ├── main/idf_component.yml #   ESP-IDF Component Manager (聲明 esp_websocket_client 依賴)
-│   │   ├── sdkconfig.defaults   #   硬體設定
-│   │   ├── edge-impulse-sdk/    #   SDK (copied, not in git)
-│   │   ├── tflite-model/        #   TFLite 模型 (git tracked)
-│   │   └── model-parameters/    #   模型參數 (git tracked)
-│   ├── esp32_client/            # WebSocket client (Arduino)
-│   ├── esp32_mic_test*/         # I2S 麥克風實驗
-│   └── mic_frontend_v1/         # VAD + Recorder 原型
-├── src/esp_miao/
-│   ├── server.py                # FastAPI WebSocket server (新增 ASR, Audio Reassembler, LLM Fallback)
-│   ├── models.py                # Pydantic protocol models (新增 AudioStreamStart/Chunk)
-│   ├── esp32_simulator.py       # ESP32 模擬器 CLI (支援 Audio Request)
-│   └── retry.py                 # Retry utilities
-├── tests/
-│   ├── test_communication.py    # WebSocket 基礎通訊測試
-│   └── test_audio.py            # Audio Request (ASR) 流程測試
-├── SPEC.md                      # Protocol specification
-├── WALKTHROUGH.md               # Progress tracking
-├── CHANGELOG.md                 # Version history
-└── README.md                    # This file
+├── src/esp_miao/                # Server 核心 (v0.5.1 模組化)
+│   ├── app.py                   #   FastAPI 路由與消息處理
+│   ├── audio.py                 #   ASR 轉錄模組
+│   ├── intent.py                #   意圖解析模組
+│   ├── dispatch.py              #   指令派發模組
+│   ├── connection.py            #   連線與設備管理
+│   ├── config.py                #   環境變數與配置
+│   ├── models.py                #   Pydantic 協議模型
+│   ├── version.py               #   版號定義
+│   └── server.py                #   Uvicorn 啟動入口
+├── tests/                       # 自動化測試 (pytest)
+├── SPEC.md                      # 通訊協議規格書 (SSOT for Protocol)
+├── CHANGELOG.md                 # 版本變更記錄 (SSOT for Version)
+└── README.md                    # 本文件
+```
 
 ---
 
-## 10. MVP Implementation Plan
-
-### Phase 1 (Done)
-
-* Edge Impulse wake word detection
-* I2S INMP441 audio capture
-* RMS VAD gate
-* LED feedback
-
-### Phase 2 (Done)
-
-* Server WebSocket + Ollama LLM
-* JSON protocol
-* ESP32 simulator
-
-### Phase 3 (Future)
-
-* Wake word → Server command forwarding
-* Feedback audio playback
-* Multi-device support
-
----
-
-## Related Projects
-
-| 專案 | 說明 |
-| :--- | :--- |
-| `esp-test` | Edge Impulse 喚醒詞實驗專案 (已整合至本專案) |
-| `inmp441_recorder` | INMP441 錄音 + VAD + WiFi 上傳工具 (訓練資料收集) |
-
----
-
-## Project follow ./WALKTHROUGH.md
-## Project specification ./SPEC.md
-
-## Reference 
-same as ./REFERENCE.md
-
-* [https://github.com/espressif/esp-sr](https://github.com/espressif/esp-sr)
-* [https://docs.espressif.com/projects/esp-sr](https://docs.espressif.com/projects/esp-sr)
-* [https://github.com/78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)
-* [https://github.com/ollama/ollama](https://github.com/ollama/ollama)
-* [https://docs.espressif.com/projects/esp-idf](https://docs.espressif.com/projects/esp-idf)
-* [https://edgeimpulse.com](https://edgeimpulse.com)
-
----
-
-## Performance Tuning (RPi4 Optimized)
+## 6. Performance Tuning (RPi4 Optimized)
 
 本專案針對 Raspberry Pi 4 進行了深度效能優化。您可以透過 `.env` 檔案或環境變數調整以下參數：
 
 | 環境變數 | 預設值 | 說明 |
 | :--- | :--- | :--- |
 | `SERVER_RELOAD` | `0` | 是否開啟 Hot Reload。生產環境務必設為 `0` 以消除高 CPU 佔用。 |
-| `LOAD_MODEL_ON_START` | `1` | 是否啟動即載入模型。設為 `1` 可保證即時響應；`0` 則採延遲載入以節省 RAM。 |
-| `LOG_LEVEL` | `INFO` | 日誌等級。穩定後建議設為 `WARNING` 以節省 I/O。 |
-| `DEBUG_AUDIO_SAVE` | `0` | 是否將錄音存檔。設為 `0` 可大幅減少 SD 卡寫入開銷。 |
+| `LOAD_MODEL_ON_START` | `1` | 是否啟動即載入模型。 |
+| `LOG_LEVEL` | `INFO` | 日誌等級。 |
+| `DEBUG_AUDIO_SAVE` | `0` | 是否將錄音存檔。 |
 
-**註：** 伺服器已內建單執行緒推論保護，確保在 RPi4 上同一時間僅處理一個語音請求，避免系統崩潰。
+---
+
+*更多細節請參閱 [SPEC.md](./SPEC.md) 與 [WALKTHROUGH.md](./WALKTHROUGH.md)。*

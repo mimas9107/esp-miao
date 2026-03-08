@@ -636,3 +636,30 @@ Server 收到後自動更新 DynamicDeviceTable 與別名映射。
 | GET | `/devices/{name}` | 查詢單一裝置資訊 |
 | GET | `/audio` | 列出所有錄音檔案 |
 | GET | `/audio/{filename}` | 下載錄音 WAV 檔案 |
+
+---
+
+## 8. Versioning & Development Standards
+
+> 為了確保 AI Agent、開發團隊與自動化工具之間的一致性，本專案實施嚴格的版本管理規範。
+
+### 8.1 唯一事實來源 (Source of Truth)
+
+*   **唯一基準**: `CHANGELOG.md` 為專案版本號的**唯一事實來源 (Single Source of Truth, SSOT)**。
+*   **版本格式**: 遵循 [Semantic Versioning 2.0.0](https://semver.org/) (例如 `v0.5.0`)。
+
+### 8.2 版本同步要求 (Sync Requirements)
+
+當專案版本發生變動時，必須確保以下位置同步更新：
+
+1.  **`CHANGELOG.md`**: 首先在此記錄變動內容並更新最新版本標頭。
+2.  **`pyproject.toml`**: 更新 `[project].version` 欄位。
+3.  **`src/esp_miao/version.py`**: 更新 `__version__` 變數。
+4.  **`README.md`**: 若涉及重大功能更新，需同步更新文件中提到的版本號。
+5.  **`SPEC.md`**: 更新文件開頭的「最後更新日期」。
+
+### 8.3 AI Agent 操作準則
+
+*   **讀取優先**: AI Agent 在進行任何開發任務前，應先讀取 `CHANGELOG.md` 以確認當前版本脈絡。
+*   **禁止私自定義**: 禁止在未更新 `CHANGELOG.md` 的情況下，私自修改其他檔案中的版本號。
+*   **驗證機制**: 任何涉及版本號的修改，必須同時檢查 `pyproject.toml` 與 `version.py` 是否達成一致性。

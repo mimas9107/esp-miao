@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-03-08
+
+### Changed (Server Architecture)
+- **Modular Refactoring (伺服器模組化重構)**
+  - 將 `server.py` 拆解為 `app.py`, `audio.py`, `intent.py`, `dispatch.py`, `connection.py`, `config.py`, `utils.py`。
+  - 大幅提升代碼可維護性與可測試性。
+  - 引進 `version.py` 統一版號管理。
+- **Version Tracking Policy (版本追蹤規範)**
+  - 更新 `SPEC.md` 定義 `CHANGELOG.md` 為唯一事實來源 (SSOT)。
+  - 確保開發團隊與 AI Agent 間的版本一致性。
+
+### Fixed
+- **Circular Imports**: 解決了模組間因匯入關係造成的潛在衝突。
+- **Async Efficiency**: 最佳化音效播放與音訊儲存的背景執行邏輯。
+
 ## [0.5.0] - 2026-03-05
 
 ### Added (User Experience)
