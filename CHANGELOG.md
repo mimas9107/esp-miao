@@ -2,443 +2,94 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [0.5.1] - 2026-03-08
-
-### Changed (Server Architecture)
-- **Modular Refactoring (伺服器模組化重構)**
-  - 將 `server.py` 拆解為 `app.py`, `audio.py`, `intent.py`, `dispatch.py`, `connection.py`, `config.py`, `utils.py`。
-  - 大幅提升代碼可維護性與可測試性。
-  - 引進 `version.py` 統一版號管理。
-- **Version Tracking Policy (版本追蹤規範)**
-  - 更新 `SPEC.md` 定義 `CHANGELOG.md` 為唯一事實來源 (SSOT)。
-  - 確保開發團隊與 AI Agent 間的版本一致性。
-
-### Fixed
-- **Circular Imports**: 解決了模組間因匯入關係造成的潛在衝突。
-- **Async Efficiency**: 最佳化音效播放與音訊儲存的背景執行邏輯。
-
-## [0.5.0] - 2026-03-05
-
-### Added (User Experience)
-- **Wake Word ACK Sound (喚醒提示音反饋)**
-  - 實作了 ESP32 在偵測到喚醒詞後，主動發送 HTTP GET 請求至 `/ack`。
-  - 此舉讓伺服器能立即播放喚醒提示音，提供使用者即時的語音反饋。
-  - **Non-blocking Implementation**: 採用快速逾時機制，確保 HTTP 請求不影響隨後的語音捕捉與錄製。
-
-## [0.4.9] - 2026-03-05
-
-### Added (System Observability)
-- **Metrics Subsystem (數據觀測系統)**
-  - 實作了非同步的 metrics 收集模組 (`src/esp_miao/metrics/`)，對主流程 (ASR/LLM/MQTT) 進行低開銷埋點。
-  - **Metrics Context**: 追蹤每個請求的完整生命週期，紀錄 ASR 耗時、LLM 耗時、關鍵字命中率與派發結果。
-  - **Async Logger**: 使用 Background Thread + Queue 寫入 `metrics.jsonl`，確保不阻塞 WebSocket 響應。
-  - **Analysis Tool**: 新增 `scripts/analyze_metrics.py`，可一鍵生成延遲分布、錯誤率與邏輯分支佔比報告。
-
-## [0.4.8] - 2026-03-05
-
-### Added (Time Synchronization & Observability)
-- **Miao-Sync Protocol (WebSocket 時間同步)**
-  - 實作了 Server 到 ESP32 的 `time_sync` 訊息。
-  - 裝置在 WebSocket 連線成功後會立即收到伺服器當前 Unix Epoch 並校正 RTC。
-  - 解決了離線環境或 NTP 失效導致的時間斷層問題。
-- **Unified Timestamp (時間戳記統一)**
-  - 全專案通訊協議統一使用 Unix Epoch 毫秒 (UTC 基準)。
-  - ESP32 端將訊息傳輸用的 `timestamp` 從 Uptime 毫秒更換為校正後的 Unix 毫秒。
-- **Enhanced Logging (日誌透明度強化)**
-  - ESP32 所有關鍵日誌 (Action, GPIO, Play) 均加入 `[TS: %llu]` 絕對時間標記。
-  - Server 端日誌同步輸出設備帶來的時間戳記，便於分析網路與處理延遲。
-
-## [0.4.7] - 2026-03-04
-
-### Added (Cross-Project Integration & Robustness)
-- **HTTP API Control Module (HTTP API 控制模組)**
-  - 實作了通用指令派發器 `dispatch_command`，支援 MQTT 與 REST API 雙模式。
-  - 直接與 `myxiaomi` (vacuumd) 專案整合：語音啟動/回充掃地機器人改走 HTTP POST 呼叫 8009 埠口。
-  - **Robustness Throttling**: 將 HTTP Timeout 放寬至 10 秒，以適應掃地機器人較慢的硬體響應。
-- **Virtual Device Support & Semantic Logic (虛擬設備與語義強化)**
-  - 在設備表預設註冊 `vacuum` (掃地機器人)。
-  - **ASR Tolerance**: 擴充別名包含「少地」、「少弟」、「清掃」等詞彙，提升雜音環境辨識率。
-  - **Intention Completion**: 針對掃地機實作「預設啟動」邏輯，若僅說出設備名則自動執行 `start`。
-
-## [0.4.6] - 2026-03-04
-
-### Optimized (Server Performance & RPi4 Support)
-- **Resolved High Idle CPU (待機佔用消除)**
-  - 修正了 `uvicorn` 的啟動參數，預設關閉 `reload` (Hot Reload) 模式。
-  - 徹底解決了因掃描 `firmware/` 目錄中數千個 C++ SDK 檔案導致 RPi4 單核佔用 88% 的效能問題。
-  - 新增 `SERVER_RELOAD` 環境變數，允許在開發環境手動開啟，並自動限制監控路徑僅為 `src/`。
-- **Inference Concurrency Control (推論併發控制)**
-  - 引入 `ThreadPoolExecutor(max_workers=1)`。
-  - 限制推論任務為單一佇列排隊執行，防止 RPi4 因多個語音請求併發而導致 CPU 飽和與系統當機。
-- **Resource Loading Strategy (資源載入優化)**
-  - 實作單例模式 (Singleton) 載入 Whisper 模型。
-  - 預設維持啟動即載入 (Preload) 以保證即時響應，但提供 `LOAD_MODEL_ON_START=0` 選項供極限省電/省記憶體模式使用。
-- **I/O & Logging Throttling (I/O 節流)**
-  - 新增 `DEBUG_AUDIO_SAVE` 環境變數，預設關閉音訊除錯存檔，減少磁碟 I/O wait。
-  - 日誌級別改為可透過 `LOG_LEVEL` 環境變數動態配置。
-
-## [0.4.5] - 2026-03-03
-
-### Added (Connectivity Robustness)
-- **WebSocket Emergency Reconnect (緊急重連機制)**
-  - 當偵測到喚醒詞但發現連線失效時，主動觸發 WebSocket Client 的 `Stop -> Start` 流程。
-  - 實作 2 秒重連等待視窗，確保在伺服器重啟後，第一次語音觸發即可強制恢復連線。
-- **WebSocket Keep-alive (心跳探測)**
-  - 啟用每 5 秒一次的 Ping/Pong 探測，能更快偵測到伺服器端的靜默斷線。
-  - 縮短重連與網路超時時間至 5 秒，提升狀態恢復靈敏度。
-- **Enhanced Connection Guard (連線守護)**
-  - 在發送音訊串流前執行 `esp_websocket_client_is_connected` 二次校驗。
-  - 任何發送失敗 (`send_text`/`send_bin`) 均會立即標記斷線狀態，觸發背景自動重連。
-- **Diagnostic Logging (診斷強化)**
-  - 在 WebSocket 事件處理器中增加 `WEBSOCKET_EVENT_ERROR` 的 `op_code` 詳細日誌輸出。
-
-## [0.4.4] - 2026-03-03
-
-### Added (Firmware Optimization)
-- **FFT-based VAD (Voice Activity Detection)**
-  - 整合自 `esp-miao-test2` 的重大韌體優化。
-  - 引入 512 點 FFT 分析，鎖定人聲頻帶 (300Hz ~ 3400Hz) 進行能量偵測。
-  - 取代舊有的 RMS 能量門檻法，顯著提升了遠場識別穩定性並降低環境噪音誤觸發。
-- **VAD Statistics Dashboard**
-  - 在韌體中加入統計機制，每 30 幀輸出一次 FFT 觸發與 ML 辨識成功的統計數據。
-  - 預設 FFT 能量閾值優化為 `25000`（根據實測數據調優）。
-- **Performance Optimized FFT (運算優化)**
-  - 引入 **旋轉因子查表法 (Twiddle Factors Table)**，消除 `cosf/sinf` 重複運算。
-  - 實作 **Magnitude Squared 累加策略**，將迴圈內的開根號運算減少為一次，大幅降低 CPU 負載。
-- **Conditional Debug Logging (資源節省)**
-  - 新增 `VAD_FFT_DEBUG` 宏控制，允許一鍵關閉詳細 VAD 統計與推論日誌，節省 Serial I/O 資源。
-  - 修正了 `uint32_t` 格式化字串的編譯警告。
-
-
-## [0.4.3] - 2026-03-02
+## [v0.6.0] - 2026-03-12
 
 ### Added
-- **Graceful Shutdown API**
-  - 新增 `/shutdown` 端點，允許透過 HTTP 請求觸發伺服器安全關閉。
-- **Lifecycle Management (lifespan)**
-  - 整合 FastAPI `lifespan` 機制，將 MQTT 連線與 Whisper 模型初始化集中管理。
-  - 確保伺服器關閉時主動停止 MQTT 迴圈 (`loop_stop`) 並中斷連線，解決了中斷時的資源洩漏 (Semaphore leak) 警告。
-
-## [0.4.2] - 2026-03-02
-
-### Optimized (Performance Refactoring)
-- **Priority Intent Parsing (邏輯前置化)**
-  - 重構 `parse_intent_with_llm`：當 `keyword_intent` 已具備明確的目標與動作時，直接返回結果，完全跳過 LLM (Ollama) 呼叫。大幅降低了常見指令（如「開燈」）的延遲。
-- **In-Memory ASR Pipeline (I/O 優化)**
-  - 修改 `transcribe_audio`：移除實體暫存 WAV 檔案機制，改用 `io.BytesIO` 在記憶體中建構音訊資料流，減少磁碟 I/O 開銷。
-  - 將音訊偵錯存檔動作 (`save_audio_file`) 移至背景非同步執行，不再阻塞主處理流程。
-- **Non-blocking Model Inference (非同步推論)**
-  - 使用 `asyncio.to_thread` 執行阻塞式的 Whisper `transcribe` 推論，確保大型模型運算時不會阻塞 WebSocket 事件迴圈，提升系統併發穩定性。
-- **ASR Tuning**
-  - 調整 `faster-whisper` 的 `beam_size` 從 5 降至 3，在保持精確度的前提下換取更快的轉錄速度。
-
-### Fixed
-- **Enhanced Validation Logging**
-  - 在 `ActionValidator` 中導入專屬 Logger，詳細記錄動作驗證失敗的具體原因（如：無效動作、未知裝置、不允許的數值），提升可維護性。
-
-## [0.4.1] - 2026-03-01
-
-### Fixed
-- **Pydantic Validation (GPIO Whitelist)**
-  - 修正了 `DynamicDeviceTable` 在處理無 GPIO 欄位的 MQTT 裝置時，誤傳 `-1` 導致觸發白名單驗證失敗的問題。現在 `gpio` 預設為 `None`，符合遠端裝置定義。
-- **MQTT Topic Fallback Logic**
-  - 修正了 `publish_mqtt_command` 在處理 Pydantic 模型屬性為 `None` 時，無法正確觸發 `getattr` 預設值的 Bug。現在實作了明確的 `if-else` 檢查，確保 `Invalid topic` 錯誤不再發生。
-- **Topic Collision (主題衝突)**
-  - 修正了靜態裝置 (`light`, `fan`, `led`) 全數擠在同一個預設主題 `"lamp/command"` 的問題。現在為每個靜態裝置分配了獨立的 `control_topic`：
-    - `light` -> `lamp/command`
-    - `fan` -> `home/fan/command`
-    - `led` -> `home/led/command`
-- **LLM Intent Correction (意圖校正)**
-  - 優化了 `parse_intent_with_llm` 的交叉驗證邏輯。當小型 LLM (0.5b) 生成非標準動作（如 `toggle_set`）或錯誤值時，系統能精確 Fallback 回關鍵字比對結果。
-
-### Added
-- **Sub-project: mqtt_for_esp32 (Arduino)**
-  - 完成子專案整合，實作 `sendDiscoveryMessage()`。裝置在連線 MQTT 後會自動發送「自我介紹」JSON，實現隨插即用。
-  - 更新子專案 `README.md`，提供完整的 Discovery 部署教學。
-
-## [0.4.0] - 2026-03-01
-
-### Added
-- **Device Dynamic Registration (MQTT Discovery System)**
-  - 實作伺服器端 `DynamicDeviceTable`，擺脫硬編碼裝置 (Hardcoded Devices) 模式。
-  - 伺服器啟動後自動訂閱 `home/discovery`，支援隨插即用 (Plug & Play) 的裝置擴充。
-  - 支援裝置自定義控制 Topic、指令 Payload 與語音別名 (Aliases)。
-- **MQTT Broker Integration**
-  - 整合 `paho-mqtt` 作為通訊中樞。
-  - 支援 `.env` 配置：`MQTT_BROKER`, `MQTT_AUTH_USER`, `MQTT_AUTH_PASSWORD` 等環境變數。
-  - 重構 `publish_mqtt_command` 為查表式發布，自動根據註冊表尋址。
-- **Dynamic LLM Prompt Generation**
-  - LLM 的 `Available devices` 列表現在會根據當前在線且已註冊的裝置動態生成。
-  - 顯著提高 LLM 在多裝置環境下的解析精確度。
-- **ASR & Intent Optimization**
-  - 強化 `extract_intent_from_text`：使用動態別名地圖匹配，並自動處理空白與大小寫，提升後備機制 (Fallback) 的成功率。
-  - 實作更嚴格的重複幻聽過濾器，解決特定環境下的 Whisper 幻聽問題。
-- **Control Board Template**
-  - 併入 `mqtt_for_esp32/` 專案，提供 Arduino 版本的終端裝置範本，包含自動註冊 (Discovery) 邏輯。
+- **Eye UI Animation System**: Integrated an animated eye UI for real-time visual feedback.
+  - Supported 6 visual states: `IDLE`, `WAKE`, `LISTENING`, `THINKING`, `ACTION`, and `ERROR`.
+  - Dedicated UI task running on **ESP32 Core 1** for 30+ FPS animations.
+- **State Bridge**: New `ui_state` component using FreeRTOS queues for task communication.
+- **Arduino Integration**: Added `arduino-esp32` as an ESP-IDF component.
 
 ### Changed
-- **Architectural Realignment (架構重定位)**
-  - **ESP32 (Wake Word)**：職責純化為「喚醒詞辨識 + 錄音傳送」，不再負責發送 MQTT 指令，確保邊緣端資源最大化利用。
-  - **Server**：確立為「決策中樞」，負責所有 MQTT 指令的發布與邏輯判斷。
-- **Model Updates**
-  - `Device` Pydantic 模型升級：`gpio` 改為選填，新增 `aliases`, `control_topic`, `commands` 等欄位以支援異質設備。
-
-## [0.3.6] - 2026-02-27
-
-### Added
-- **Server-side Audio Playback (伺服器端音效播放)**
-  - 實作伺服器端本地播放功能，解決 ESP32 無喇叭硬體的問題。
-  - 使用系統 `aplay` 指令實現非阻塞（Non-blocking）音訊播放。
-  - 新增 `get_action_sound` 映射邏輯：
-    - 開燈 (`light` on) -> `lightopen.wav`
-    - 關燈 (`light` off) -> `lightclose.wav`
-    - 一般成功 -> `success.wav`
-    - 錯誤 -> `error.wav`
-    - 不理解 -> `not_understood.wav`
-- **Local Sound Directory**
-  - 音效檔存放路徑設為 `src/esp_miao/playsound/`。
-
-## [0.3.5] - 2026-02-27
-
-### Added
-- **Binary Audio Streaming (二進位音訊串流)**
-  - 在 ESP32 韌體與 Server 端同步實作「純二進位」傳輸模式。
-  - 頻寬節省約 **33%**，並大幅降低 ESP32 的 CPU 與記憶體開銷（免去 Base64 編碼與 JSON 封裝）。
-  - 在 `audio_start` 協議中新增 `transfer_mode` 欄位以支援雙模式（`base64` 與 `binary`）。
-- **Protocol Flexibility**
-  - ESP32 韌體新增 `USE_BINARY_STREAM` 巨集，方便在不同環境下測試傳輸效能。
+- **Audio Architecture (OOM Fix)**: Refactored audio handling to **"Real-time Binary Streaming"**.
+  - Replaced 96KB buffer with 2KB chunks to solve heap fragmentation issues.
+  - Server-side processing starts immediately upon first chunk reception.
 
 ### Fixed
-- **WebSocket Stability (Server-side)**
-  - 修復了 `RuntimeError: Cannot call "receive" once a disconnect message has been received` 錯誤。
-  - 正確處理 WebSocket 斷線事件訊息，確保伺服器在客戶端斷開後能平穩清理資源。
+- **Header Conflicts**: Fixed `IPADDR_NONE` macro collision between Arduino and lwIP.
+- **Memory Stability**: Heap remains stable at ~118KB during peak operation.
 
-## [0.3.4] - 2026-02-26
+## [v0.5.3] - 2026-03-08
+
+### Changed
+- **Server Modularization**: Completed refactoring of `server.py` into a modular package structure.
+  - Split into `audio.py`, `intent.py`, `dispatch.py`, `connection.py`, etc.
+  - Improved maintainability and testability.
+
+## [v0.5.2] - 2026-03-07
+
+### Added
+- **Wake Feedback Optimization**: Implemented HTTP `/ack` trigger.
+  - ESP32 sends a non-blocking GET request immediately upon wake word detection.
+  - Server plays a local acknowledgment sound to provide instant feedback.
+
+## [v0.5.1] - 2026-03-05
+
+### Added
+- **Metrics System**: Implemented a system for tracking ASR latency, LLM fallback ratios, and success rates.
+  - Added async JSONL logging for performance analysis.
+- **Miao-Sync (Timestamp Alignment)**: Unified all timestamps to Unix Epoch ms (UTC).
+  - Fixed 1970 initialization issues on ESP32.
+
+## [v0.5.0] - 2026-03-04
+
+### Added
+- **Cross-Project Integration**: Integrated with `myxiaomi` via HTTP REST API.
+  - Enabled control of Xiaomi ecosystem devices through local voice commands.
+- **Process Management**: Implemented `asyncio` subprocess management to eliminate zombie `aplay` processes.
+
+### Changed
+- **Performance Tuning**: Disabled Uvicorn reload on RPi4, reducing idle CPU usage to ~10%.
+
+## [v0.4.5] - 2026-03-03
+
+### Added
+- **FFT-based VAD**: Integrated advanced FFT Voice Activity Detection.
+  - Improved noise resistance and distant field wake word stability.
+  - Replaced basic RMS-only detection.
+
+## [v0.4.4] - 2026-03-02
 
 ### Optimized
-- **Memory Management (ESP32 DevKit V1 Optimization)**
-  - 將 3 秒錄音緩衝區 (`recording_buffer`) 從靜態分配改為動態分配 (`malloc`/`free`)。
-  - 成功釋放 **96KB** 的靜態 DRAM 空間，使系統平時運行的 DRAM 剩餘量從 **30KB** 提升至 **126KB**。
-  - 大幅提升了無 PSRAM 機種在處理 WebSocket 與 JSON 訊息時的穩定性。
+- **Priority Intent Parsing**: Skip LLM calls if keyword intent is clear.
+- **In-Memory ASR**: Removed physical temp files, using `io.BytesIO` for faster processing.
 
-### Changed
-- **Threshold Fine-tuning**
-  - 調降 `VAD_THRESHOLD` 從 `2000` 至 **`1500`**，找回更好的語音活動偵測靈敏度。
-  - 調降 `EI_CLASSIFIER_THRESHOLD` 從 `0.9` 至 **`0.85`**，在保持穩定性的同時提升喚醒詞辨識的易用性。
-
-## [0.3.3] - 2026-02-26
+## [v0.4.0] - 2026-03-01
 
 ### Added
-- **Keyword Pre-filtering Layer (關鍵字預篩選攔截)**
-  - 在 Server 端導入「關鍵字先行」策略：若 ASR 辨識出的文字不包含任何裝置別名（如燈、風扇）或動作關鍵字（如開、關），則直接判定為誤觸，不再送往 LLM 解析。
-  - 大幅減少對「哈哈笑聲」、「非控制用語」的無效 LLM 解析負擔，並提升系統反應速度。
-- **LLM Prompt Optimization**
-  - 在 Prompt 中加入反例（如「哈哈笑」-> `unknown`），引導 LLM 在遇到無法解析的內容時主動回傳 unknown，而非胡亂發明動作。
-- **Enhanced Hallucination Filtering**
-  - 調低重複字過濾門檻，現在能攔截更短的重複幻聽（如 "哈哈哈哈"）。
+- **MQTT Discovery Gateway**: Transitioned from static control to a dynamic discovery-based architecture.
+- **Dynamic LLM Prompt**: LLM context now includes currently online devices from discovery.
 
-## [0.3.2] - 2026-02-26
+## [v0.3.5] - 2026-02-27
 
 ### Added
-- **ASR Hallucination Filtering**
-  - 在 Server 端加入 `no_speech_threshold=0.6` 參數，強化 Whisper 對無聲/底噪的過濾。
-  - 實作「重複短語過濾機制」，自動攔截常見的 Whisper 幻聽模式（如 "我認識了我認識了"）。
-- **Documentation Update**
-  - 在 `TROUBLESHOOTS.md` 中詳細紀錄了 Whisper 幻聽（Hallucination）的現象分析與應對方案。
+- **Binary Audio Protocol**: Initial implementation of binary WebSocket frames for audio data.
+- **Server-side Playback**: Integrated `aplay` for server-side audio feedback.
 
-### Fixed
-- **Threshold Optimization**
-  - 將 `EI_CLASSIFIER_THRESHOLD` 進一步從 `0.8` 提升至 **`0.9`**，以應對高分誤判的環境底噪（曾觀測到 0.895 的底噪誤觸）。
-
-## [0.3.1] - 2026-02-26
+## [v0.3.0] - 2026-02-25
 
 ### Added
-- **Confidence Score Tracking**
-  - ESP32 韌體現在會在 `audio_start` 訊息中傳送 Edge Impulse 的推論信心分數。
-  - Server 端會將信心分數紀錄於 Log 中，並在儲存 `.wav` 檔時將分數加入檔名（例如 `conf0.85_recorded_...wav`），方便偵錯與分析。
-- **Enhanced Debug Logging**
-  - ESP32 增加 `Probable hit` 日誌，即使未達觸發門檻也會輸出 RMS 與 Confidence 數值，方便調校 VAD 與模型門檻。
+- **Edge Impulse Integration**: Replaced standard esp-sr with MFCC-based wake word detection.
+- **Continuous Inference**: Implemented sliding window inference for low-latency detection.
 
-### Fixed
-- **False Trigger Reduction (誤觸發攔截)**
-  - 調高 `EI_CLASSIFIER_THRESHOLD` 從 `0.7` 至 `0.8`。
-  - 調高 `VAD_THRESHOLD` 從 `1000` 至 `2000`，有效攔截環境底噪造成的安靜誤觸。
-  - 修正 Server 端在清空緩衝區前未正確擷取信心分數的邏輯錯誤。
-- **ASR Silence Handling**
-  - Server 端增加 ASR 空值攔截邏輯：若 Whisper 辨識結果為空（代表純雜訊或安靜），則跳過意圖解析並直接回傳 `not_understood.wav`。
-
-## [0.3.0] - 2026-02-26
+## [v0.2.0] - 2026-02-20
 
 ### Added
+- **Rule-based Intent Mapping**: Initial keyword matching for IoT control.
+- **GPIO Control**: Basic relay control via ESP32.
 
-#### Server-side AI Processing & Communication
-- **ASR (Automatic Speech Recognition) Integration**
-  - 使用 `faster-whisper` 整合語音轉文字功能。
-  - `transcribe_audio` 函式現在能夠將 Base64 編碼的 PCM 音訊轉換為文本。
-  - 強制 Whisper 模型使用 `zh` 語言，顯著提高中文語音辨識準確度。
-- **Chunked Audio Streaming Protocol**
-  - **Server 支援**：新增 `audio_start` 和 `audio_chunk` 訊息類型，伺服器能夠接收分塊傳送的音訊資料，並在收到所有區塊後重新組裝成完整的音訊檔進行 ASR 處理。
-  - 改善 ESP32 記憶體使用效率，解決了單次傳輸大檔案造成的記憶體分配失敗問題。
-- **Enhanced LLM Intent Parsing**
-  - 優化 `parse_intent_with_llm` 的 Prompt，加入明確範例以引導 0.5b 小型 Ollama 模型產生更精確的 JSON 意圖。
-  - 強化了 **Keyword Fallback (關鍵字後備機制)**：當 LLM 的解析結果不符預期（例如 `target` 或 `value` 錯誤）時，系統將優先採用關鍵字比對的結果，大幅提升了語意辨識的可靠性與強健性。
-
-#### ESP32 Firmware Functionality
-- **WiFi & WebSocket Client**
-  - 實作了 ESP32 端的 WiFi 連線和 WebSocket 客戶端功能。
-  - 現在能夠穩定連接到伺服器並進行雙向通訊。
-- **Audio Streaming Implementation**
-  - 新增 `send_audio_stream` 函式，將喚醒詞偵測後的 3 秒音訊以 4KB 區塊透過 WebSocket 傳輸至伺服器。
-  - 解決了 ESP32 記憶體不足的問題。
-- **Server Action Execution**
-  - 整合 `cJSON` 函式庫，使 ESP32 能夠解析伺服器傳來的 JSON 動作指令。
-  - 實作 `handle_server_action` 函式，根據伺服器的 `action` (例如 `relay_set`, `led_set`) 和 `target` (例如 `light`, `fan`)，控制對應的 GPIO 腳位 (目前映射 light -> GPIO 26, fan -> GPIO 27, led -> GPIO 2)。
-  - 支援 `play` 動作指令（韌體端目前僅記錄，未實作音效播放）。
-- **Build System Updates**
-  - 更新 `firmware/esp32_edge_impulse/main/CMakeLists.txt`，正確聲明 `esp_websocket_client`, `json`, `driver` 等組件依賴，確保編譯順利。
-  - 建立了 `firmware/esp32_edge_impulse/main/idf_component.yml`，以支援 ESP-IDF Managed Components。
-
-#### Testing & Tools
-- **ESP32 Simulator Enhancement**
-  - `esp32_simulator.py` 現在支援發送 `audio_request`（`a <filename>` 指令），允許開發者在無實體硬體情況下測試伺服器的 ASR 和 LLM 管線。
-- **New Test Scripts**
-  - `tests/test_communication.py`：驗證 WebSocket 基礎通訊。
-  - `tests/test_audio.py`：驗證伺服器對音訊請求的處理，包括儲存和 ASR 流程。
-
-### Changed
-- **`firmware/esp32_edge_impulse/main/main.cpp`**：
-  - 移除了 Base64 編碼，改為使用 `mbedtls/base64.h`。
-  - 移除了單次大檔案 Base64 和 JSON 緩衝區分配。
-- **`src/esp_miao/server.py`**：
-  - 移除了舊的 `handle_audio_request` 邏輯，改由 `process_complete_audio` 處理完整音訊。
-  - `ConnectionManager` 增加了 `audio_buffers` 用於音訊分塊組裝。
-
-### Fixed
-- 修正了 `firmware/esp32_edge_impulse/main/main.cpp` 在沒有明確宣告 `esp_websocket_client`, `json`, `driver` 等組件依賴時造成的編譯錯誤 (`fatal error: ...: No such file or directory`)。
-- 解決了 ESP32 在嘗試一次性分配大量記憶體來傳輸完整 Base64 音訊時的 `Failed to allocate b64 buffer` 錯誤，透過分塊傳輸策略避免了記憶體溢出。
-
-## [0.2.0] - 2026-02-25
+## [v0.1.0] - 2026-02-15
 
 ### Added
-
-#### Edge Impulse Wake Word Integration
-- **Edge Impulse TFLite 喚醒詞偵測** — 從 `esp-test` 實驗專案整合至 `firmware/esp32_edge_impulse/`
-  - 模型: `esp-miao-mfcc` (Edge Impulse Project ID: 905178)
-  - 喚醒詞: `heymiaomiao` (3 類: heymiaomiao / noise / unknown)
-  - DSP: MFCC (512 FFT, 32 filters, 13 cepstral coefficients)
-  - 推論引擎: TFLite EON Compiled, INT8 量化
-- **連續滑動視窗推論** — 1000ms window, 每 250ms 推論一次 (4 slices)
-- **I2S Stereo + 軟體左聲道提取** — 解決 ESP32 V1 硬體 Mono 模式數據錯位問題
-  - 固定接線: BCK=GPIO32, WS=GPIO25, DIN=GPIO33
-  - 時鐘: APLL 啟用，提供精確 16kHz 取樣
-- **RMS VAD 能量閘** — 閾值 1000.0，雙重觸發 (模型信心 + 音量) 降低誤判
-- **LED 回饋** — 偵測成功時 GPIO 2 藍色 LED 閃爍三次
-- **Kconfig 支援** — `EI_WAKE_WORD` 和 `EI_VAD_THRESHOLD` 可透過 menuconfig 調整
-- **sdkconfig.defaults** — 預設 ESP32 最佳化設定 (APLL, Performance optimization, Large partition)
-
-#### Build System
-- **ESP-IDF CMakeLists.txt** — 完整的 Edge Impulse SDK + TFLite 模型建置系統
-- **直接複製架構** — `edge-impulse-sdk/`, `tflite-model/`, `model-parameters/` 從 `esp-test` 直接複製，專案完全自包含
-  - `edge-impulse-sdk/` (1374 files) 排除於 git 追蹤，需從 `esp-test` 重新複製
-  - `tflite-model/` 與 `model-parameters/` 納入 git 追蹤
-
-### Removed
-- **BOOTSTRAP.md** — 已廢止，內容為早期 esp-sr skeleton code，不再適用於 Edge Impulse 架構
-
-### Changed
-- **README.md** — 全面改寫，反映 Edge Impulse 取代 esp-sr 的架構變更
-  - 新增硬體接線表、模型參數表、VAD 參考值、專案結構圖
-  - 更新系統架構圖為 Edge Impulse pipeline
-- **WALKTHROUGH.md** — 更新進度，標記 Edge Impulse 整合完成，esp-sr 方案標記為已放棄
-- **.gitignore** — 排除 Edge Impulse SDK (大型, 1374 files)、ESP-IDF build cache；追蹤 tflite-model 與 model-parameters
-
-### Technical Notes
-- Edge Impulse 取代 esp-sr 的原因: esp-sr (WakeNet/MultiNet) 在標準 ESP32-WROOM (無 PSRAM) 上記憶體不足
-- Binary size: 0x415c0 bytes (~267KB)，佔 Large partition (0x177000) 的 17%
-- 模型 Arena size: 6227 bytes，記憶體佔用極低
-
----
-
-## [0.1.0] - 2026-02-03
-
-### Added
-
-#### Server Side
-- **WebSocket Server** - FastAPI WebSocket endpoint (`/ws/{device_id}`) for ESP32 communication
-- **JSON Protocol Models** - Pydantic models for all message types defined in SPEC.md
-  - `CommandRequest` - ESP32 sends recognized command from esp-sr
-  - `FallbackRequest` - ESP32 sends text/audio for LLM processing
-  - `ActionResult` - ESP32 reports action execution result
-  - `Action` - Server sends action command to ESP32
-  - `Play` - Server sends audio playback command
-- **Ollama LLM Integration** - Intent parsing with qwen2.5:0.5b model
-- **Keyword Validation Layer** - Pre-validation before LLM to ensure device exists
-  - Device aliases mapping (燈/電燈/light, 風扇/電風扇/fan, etc.)
-  - Action keywords mapping (開/打開/on, 關/關閉/off, etc.)
-- **Device Table Manager** - Configurable device registry with GPIO mapping
-- **Action Router** - Routes parsed intents to appropriate actions
-- **Feedback Audio API** - Endpoints for serving audio files (`/audio/{filename}`)
-- **Logging** - Structured logging for debugging and monitoring
-
-#### Protocol
-- **JSON Schema** - Complete protocol definition matching SPEC.md
-- **Timeout Handling** - Configurable WebSocket response timeout (10s default)
-- **Retry Logic** - `retry.py` module with exponential backoff support
-
-#### Safety
-- **GPIO Whitelist** - Only safe GPIO pins allowed (避免 flash/boot pins)
-- **Action Validation** - Validates action, target, and value before execution
-- **Fail-safe Default** - Invalid actions return `noop` or error response
-
-#### Testing & Tools
-- **ESP32 Simulator** (`esp32-sim`) - Interactive CLI tool to simulate ESP32 device
-  - State machine implementation matching SPEC.md
-  - Command simulation (0-3 for local commands)
-  - Fallback text request simulation
-  - Full wake->listen->recognize flow simulation
-- **Communication Test** - Non-interactive test script for WebSocket validation
-
-### Project Structure
-
-```
-esp-miao/
-├── src/esp_miao/
-│   ├── __init__.py          # Package init (version 0.1.0)
-│   ├── models.py             # Pydantic models, State Machine, Safety validators
-│   ├── server.py             # FastAPI WebSocket server
-│   ├── retry.py              # Retry utilities
-│   ├── esp32_simulator.py    # ESP32 simulator CLI
-│   └── audio/                # Feedback audio files
-├── tests/
-│   └── test_communication.py # WebSocket communication test
-├── pyproject.toml            # Project config with uv
-├── CHANGELOG.md              # This file
-├── WALKTHROUGH.md            # Progress tracking
-└── ...
-```
-
-### Usage
-
-```bash
-# Start server
-uv run esp-miao
-
-# Start ESP32 simulator (another terminal)
-uv run esp32-sim
-
-# Run communication test
-uv run python tests/test_communication.py
-```
-
-### Dependencies
-- fastapi >= 0.128.0
-- uvicorn >= 0.40.0
-- websockets >= 16.0
-- ollama >= 0.6.1
-- python-dotenv >= 1.2.1
-
-[0.2.0]: https://github.com/user/esp-miao/releases/tag/v0.2.0
-[0.1.0]: https://github.com/user/esp-miao/releases/tag/v0.1.0
+- **Initial Prototype**: Basic I2S capture and WebSocket streaming architecture.

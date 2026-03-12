@@ -45,6 +45,14 @@
 #endif
 #include "esp_http_client.h"
 
+#ifdef IPADDR_NONE
+#undef IPADDR_NONE
+#endif
+
+#include "Arduino.h"
+#include "eye_ui.h"
+#include "ui_state.h"
+
 /* ---------- Configuration ---------- */
 
 // Removed hardcoded WIFI_SSID and WIFI_PASS, now from NVS/Kconfig
@@ -93,7 +101,7 @@ void send_ack_request() {
     esp_http_client_config_t config = {};
     config.url = ACK_URL;
     config.method = HTTP_METHOD_GET;
-    config.timeout_ms = 600; // 快速逾時，避免錄音延遲
+    config.timeout_ms = 800; // 快速逾時，避免錄音延遲
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
@@ -302,6 +310,7 @@ static void handle_server_action(const char *json_str)
             else if (strcmp(target, "led") == 0) gpio_num = LED_PIN;
 
             if (gpio_num != -1) {
+                ui_publish_state(UI_ACTION);
                 int level = (strcmp(value, "on") == 0) ? 1 : 0;
                 gpio_set_direction((gpio_num_t)gpio_num, GPIO_MODE_OUTPUT);
                 gpio_set_level((gpio_num_t)gpio_num, level);
@@ -704,86 +713,12 @@ static bool vad_detect(const float *buffer, size_t length,
     return fft_result;
 }
 
-/* ---------- Send Audio Stream via WebSocket (Base64 Chunked) ---------- */
+/* ---------- Real-time Audio Streaming via WebSocket (Binary) ---------- */
 
-static bool send_audio_stream_b64(const int16_t *audio_data, size_t sample_count, float confidence)
+static bool stream_audio_realtime(size_t total_samples, float confidence)
 {
     if (!ws_client || !ws_connected || !esp_websocket_client_is_connected(ws_client)) {
-        ESP_LOGE(TAG, "WebSocket not connected or stale");
-        ws_connected = false;
-        return false;
-    }
-
-    // 1. Send audio_start
-    char start_json[256];
-    snprintf(start_json, sizeof(start_json), 
-             "{\"device_id\":\"esp32_01\",\"timestamp\":%llu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f,\"transfer_mode\":\"base64\"}}",
-             get_timestamp_ms(), sample_count, confidence);
-    
-    if (esp_websocket_client_send_text(ws_client, start_json, strlen(start_json), portMAX_DELAY) < 0) {
-        ws_connected = false;
-        return false;
-    }
-
-    // 2. Send chunks
-    const size_t CHUNK_SAMPLES = 2048; // 4096 bytes per raw chunk
-    size_t samples_sent = 0;
-    int chunk_idx = 0;
-
-    // Pre-calculate b64 size for the chunk
-    size_t raw_chunk_size = CHUNK_SAMPLES * sizeof(int16_t);
-    size_t b64_max_len = 0;
-    mbedtls_base64_encode(NULL, 0, &b64_max_len, NULL, raw_chunk_size);
-    
-    char *b64_buffer = (char *)malloc(b64_max_len + 1);
-    char *json_buffer = (char *)malloc(b64_max_len + 512);
-
-    if (!b64_buffer || !json_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate streaming buffers");
-        if (b64_buffer) free(b64_buffer);
-        if (json_buffer) free(json_buffer);
-        return false;
-    }
-
-    while (samples_sent < sample_count) {
-        size_t to_send = sample_count - samples_sent;
-        if (to_send > CHUNK_SAMPLES) to_send = CHUNK_SAMPLES;
-
-        size_t b64_out_len = 0;
-        mbedtls_base64_encode((unsigned char *)b64_buffer, b64_max_len, &b64_out_len, 
-                              (const unsigned char *)(audio_data + samples_sent), 
-                              to_send * sizeof(int16_t));
-        b64_buffer[b64_out_len] = '\0';
-
-        bool is_last = (samples_sent + to_send >= sample_count);
-        int written = snprintf(json_buffer, b64_max_len + 512,
-                               "{\"device_id\":\"esp32_01\",\"timestamp\":%llu,\"type\":\"audio_chunk\",\"payload\":{\"chunk_index\":%d,\"is_last\":%s,\"data_base64\":\"%s\"}}",
-                               get_timestamp_ms(), chunk_idx, is_last ? "true" : "false", b64_buffer);
-
-        if (esp_websocket_client_send_text(ws_client, json_buffer, written, portMAX_DELAY) < 0) {
-            ESP_LOGE(TAG, "Failed to send chunk %d", chunk_idx);
-            ws_connected = false;
-            break;
-        }
-
-        samples_sent += to_send;
-        chunk_idx++;
-        vTaskDelay(pdMS_TO_TICKS(10)); // Prevent flooding
-    }
-
-    free(b64_buffer);
-    free(json_buffer);
-    
-    return (samples_sent >= sample_count);
-}
-
-/* ---------- Send Audio Stream via WebSocket (Binary Chunked) ---------- */
-
-static bool send_audio_stream_binary(const int16_t *audio_data, size_t sample_count, float confidence)
-{
-    if (!ws_client || !ws_connected || !esp_websocket_client_is_connected(ws_client)) {
-        ESP_LOGE(TAG, "WebSocket not connected or stale");
-        ws_connected = false; // 強制重置旗標
+        ESP_LOGE(TAG, "WebSocket not connected, cannot stream");
         return false;
     }
 
@@ -791,33 +726,47 @@ static bool send_audio_stream_binary(const int16_t *audio_data, size_t sample_co
     char start_json[256];
     snprintf(start_json, sizeof(start_json), 
              "{\"device_id\":\"esp32_01\",\"timestamp\":%llu,\"type\":\"audio_start\",\"payload\":{\"total_samples\":%zu,\"confidence\":%.3f,\"transfer_mode\":\"binary\"}}",
-             get_timestamp_ms(), sample_count, confidence);
+             get_timestamp_ms(), total_samples, confidence);
     
     if (esp_websocket_client_send_text(ws_client, start_json, strlen(start_json), portMAX_DELAY) < 0) {
-        ws_connected = false; // 發送失敗，標記為斷線
         return false;
     }
 
-    // 2. Send raw binary data in chunks
-    const size_t CHUNK_SAMPLES = 4096; // 8192 bytes per binary frame
-    size_t samples_sent = 0;
-
-    while (samples_sent < sample_count) {
-        size_t to_send = sample_count - samples_sent;
-        if (to_send > CHUNK_SAMPLES) to_send = CHUNK_SAMPLES;
-
-        if (esp_websocket_client_send_bin(ws_client, (const char *)(audio_data + samples_sent), 
-                                         to_send * sizeof(int16_t), portMAX_DELAY) < 0) {
-            ESP_LOGE(TAG, "Failed to send binary chunk");
-            ws_connected = false; // 發送失敗，標記為斷線
-            break;
-        }
-
-        samples_sent += to_send;
-        vTaskDelay(pdMS_TO_TICKS(5)); 
+    // 2. Stream in chunks
+    const size_t CHUNK_SAMPLES = 1024; // 2048 bytes per chunk, very small memory footprint
+    int16_t *chunk_buf = (int16_t *)malloc(CHUNK_SAMPLES * sizeof(int16_t));
+    if (!chunk_buf) {
+        ESP_LOGE(TAG, "Failed to allocate small chunk buffer!");
+        return false;
     }
 
-    return (samples_sent >= sample_count);
+    size_t samples_sent = 0;
+    bool success = true;
+
+    while (samples_sent < total_samples) {
+        size_t to_read = total_samples - samples_sent;
+        if (to_read > CHUNK_SAMPLES) to_read = CHUNK_SAMPLES;
+
+        // Read from I2S directly into small buffer
+        if (read_audio_to_buffer(chunk_buf, to_read)) {
+            if (esp_websocket_client_send_bin(ws_client, (const char *)chunk_buf, 
+                                             to_read * sizeof(int16_t), portMAX_DELAY) < 0) {
+                ESP_LOGE(TAG, "Failed to send binary chunk at %zu", samples_sent);
+                success = false;
+                break;
+            }
+            samples_sent += to_read;
+        } else {
+            ESP_LOGE(TAG, "I2S read failed during streaming");
+            success = false;
+            break;
+        }
+        // Minimal delay to allow network stack to breathe
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+
+    free(chunk_buf);
+    return success;
 }
 
 /* ---------- Edge Impulse Signal Callback ---------- */
@@ -860,6 +809,7 @@ static void inference_task(void *arg)
         read_audio_slice(ei_slice_buffer, EI_CLASSIFIER_SLICE_SIZE, NULL);
     }
     printf("Started.\r\n");
+    ui_publish_state(UI_IDLE);
 
     ei_impulse_result_t result = {};
 
@@ -914,6 +864,7 @@ static void inference_task(void *arg)
 
         if (wake_word_detected) {
             printf("\r\n>>> 🐱 WAKE WORD DETECTED! (Conf: %.3f) 🐱 <<<\r\n\r\n", detected_confidence);
+            ui_publish_state(UI_WAKE);
             
             // --- WebSocket 緊急重連機制 (v0.4.5) ---
             if (!ws_connected || !esp_websocket_client_is_connected(ws_client)) {
@@ -938,6 +889,7 @@ static void inference_task(void *arg)
             // --- 發送喚醒提示音請求 (v0.5.0) ---
             send_ack_request();
 
+            ui_publish_state(UI_LISTENING);
             for (int k = 0; k < 3; k++) {
                 gpio_set_level(LED_PIN, 1);
                 vTaskDelay(pdMS_TO_TICKS(100));
@@ -945,60 +897,29 @@ static void inference_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
             
-            printf(">>> REC: Starting 3-second recording...\r\n");
-            
-            // Allocate memory dynamically
-            recording_buffer = (int16_t *)malloc(AUDIO_BUFFER_SIZE_3S);
-            if (recording_buffer == NULL) {
-                printf(">>> REC: Failed to allocate memory (OOM)!\r\n");
-                continue;
-            }
+            printf(">>> STR: Starting real-time audio streaming (3 sec)...\r\n");
+            ui_publish_state(UI_THINKING);
 
-            recording_samples = 0;
-            recording_complete = false;
+            bool sent = stream_audio_realtime(AUDIO_SAMPLES_3S, detected_confidence);
             
-            bool success = read_audio_to_buffer(recording_buffer, AUDIO_SAMPLES_3S);
-            
-            if (success) {
-                recording_samples = AUDIO_SAMPLES_3S;
-                recording_complete = true;
-                printf(">>> REC: Completed. Samples: %zu\r\n", recording_samples);
+            if (sent) {
+                printf(">>> STR: Streaming completed successfully!\r\n");
             } else {
-                printf(">>> REC: Failed during I2S read!\r\n");
+                printf(">>> STR: Streaming failed!\r\n");
+                ui_publish_state(UI_ERROR);
             }
-            
-            vTaskDelay(pdMS_TO_TICKS(100));
-            
-            if (recording_complete && recording_samples > 0) {
-                uint64_t ts = get_timestamp_ms();
-                printf(">>> WAV: Sending %zu samples via WebSocket (%s) at TS: %llu...\r\n", 
-                       recording_samples, USE_BINARY_STREAM ? "Binary" : "Base64 Streaming", ts);
-                
-                bool sent = false;
-                if (USE_BINARY_STREAM) {
-                    sent = send_audio_stream_binary(recording_buffer, recording_samples, detected_confidence);
-                } else {
-                    sent = send_audio_stream_b64(recording_buffer, recording_samples, detected_confidence);
-                }
-                
-                if (sent) {
-                    printf(">>> WAV: Sent successfully!\r\n");
-                } else {
-                    printf(">>> WAV: Send failed!\r\n");
-                }
-            }
-            
-            // FREE memory after sending
-            free(recording_buffer);
-            recording_buffer = NULL;
             
             vTaskDelay(pdMS_TO_TICKS(500));
+            ui_publish_state(UI_IDLE);
         }
     }
 }
 
 extern "C" int app_main()
 {
+    // Initialize Arduino framework
+    initArduino();
+
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1006,6 +927,10 @@ extern "C" int app_main()
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // Initialize UI State Queue and Start UI Task
+    ui_state_init();
+    eye_ui_start();
 
     setup_led();
     init_wifi();
