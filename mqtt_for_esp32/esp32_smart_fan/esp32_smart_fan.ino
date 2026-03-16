@@ -15,8 +15,9 @@
 //const int relayPin = 26; // Relay接腳 (請根據你的接腳改)
 const int relayPin=5; // 測試暫時用亮燈的方式來表示
 
-const char* mqttCommandTopic = "lamp/command"; // MQTT指令 Topic
-const char* mqttStatusTopic  = "lamp/status";  // 回報狀態用的 Topic
+//const char* mqttCommandTopic = "fan/command"; // MQTT指令 Topic
+const char* mqttCommandTopic="home/fan/command"; // 新版 MQTT指令頻道Topic.
+const char* mqttStatusTopic  = "home/fan/status";  // 回報狀態用的 Topic
 
 // ====================【系統變數】====================
 WiFiClient espClient;
@@ -67,15 +68,16 @@ void sendDiscoveryMessage() {
   const char* discoveryTopic = "home/discovery";
   
   StaticJsonDocument<1024> doc;
-  doc["device_id"] = "light_02v2";
+  doc["device_id"] = "fan1v2";
   doc["device_type"] = "relay";
   
   JsonArray aliases = doc.createNestedArray("aliases");
-  aliases.add("燈");
-  aliases.add("電燈");
-  aliases.add("燈光");
-  aliases.add("lights");
-  aliases.add("light");
+  aliases.add("風扇");
+  aliases.add("電風扇");
+  aliases.add("電封");
+  aliases.add("fan");
+  aliases.add("電封");
+  aliases.add("封散");
   
   doc["control_topic"] = mqttCommandTopic;
   
@@ -92,7 +94,7 @@ void sendDiscoveryMessage() {
   kw_on.add("turn on");
   kw_on.add("on");
   kw_on.add("open");
-  kw_on.add("kaitan");
+  kw_on.add("kaifongsan");
 
   JsonArray kw_off = action_keywords.createNestedArray("off");
   kw_off.add("關");
@@ -102,7 +104,6 @@ void sendDiscoveryMessage() {
   kw_off.add("turn off");
   kw_off.add("off");
   kw_off.add("close");
-  kw_off.add("kuan teng");
 
   String payload;
   serializeJson(doc, payload);
@@ -121,7 +122,7 @@ void sendDiscoveryMessage() {
 void connectToMQTT() {
   if (!mqttClient.connected()) {
     Serial.print("正在連接MQTT...");
-    String clientId = "ESP32-SmartLight-" + String(random(0xffff), HEX);
+    String clientId = "ESP32-SmartFan-" + String(random(0xffff), HEX);
     
     if (mqttClient.connect(clientId.c_str(),mqtt_user,mqtt_password)) {
       Serial.println("MQTT連線成功！");
@@ -142,13 +143,13 @@ void setupHttpServer() {
   server.on("/on", HTTP_GET, [](AsyncWebServerRequest *request){
     digitalWrite(relayPin, HIGH);
     mqttClient.publish(mqttStatusTopic, "ON");
-    request->send(200, "text/plain", "燈已開啟");
+    request->send(200, "text/plain", "風扇已開啟");
   });
   
   server.on("/off", HTTP_GET, [](AsyncWebServerRequest *request){
     digitalWrite(relayPin, LOW);
     mqttClient.publish(mqttStatusTopic, "OFF");
-    request->send(200, "text/plain", "燈已關閉");
+    request->send(200, "text/plain", "風扇已關閉");
   });
   
   server.begin();

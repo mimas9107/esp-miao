@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.6.5] - 2026-03-16
+
+### Added
+- **Device-Aware Intent Architecture**: Implemented dynamic per-device action keywords.
+  - ESP32 devices can now self-describe their "on/off" keywords via structured Discovery payloads.
+  - Server dynamic learning: `DynamicDeviceTable` now merges device-specific vocabulary during registration.
+- **ArduinoJson Integration**: Switched to `ArduinoJson` for `mqtt_for_esp32` to support complex metadata.
+
+### Changed
+- **Intent Engine Refactor**: Rewrote `extract_intent_from_text` to prioritize per-device keywords over global defaults.
+- **Standardized Behavior**: Removed hardcoded vacuum auto-on logic to ensure consistent UX across all devices.
+
+### Fixed
+- **MQTT Buffer Overflow**: Increased PubSubClient buffer to 1024 bytes to accommodate large Discovery JSON.
+- **Server NameError**: Resolved missing import of `ACTION_KEYWORDS` in `connection.py`.
+
 ## [v0.6.0] - 2026-03-12
 
 ### Added

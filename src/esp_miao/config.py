@@ -32,6 +32,8 @@ MQTT_AUTH_USER = os.getenv("MQTT_AUTH_USER")
 MQTT_AUTH_PASSWORD = os.getenv("MQTT_AUTH_PASSWORD")
 
 # --- LLM Intent Parsing Keywords ---
+# @deprecated: Global ACTION_KEYWORDS will be replaced by per-device keywords from discovery.
+# Use this only as a fallback for legacy devices.
 ACTION_KEYWORDS = {
     "on": ["開", "打開", "開啟", "啟動", "掃地", "清掃", "開始", "turn on", "on", "open", "kaitan"],
     "off": ["關", "關閉", "關掉", "停止", "回充", "充電", "回去", "回家", "turn off", "off", "close", "kuan teng"],

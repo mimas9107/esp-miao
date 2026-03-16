@@ -7,7 +7,7 @@ from fastapi import WebSocket
 from .models import Device, DeviceTable, ActionValidator
 from .config import (
     MQTT_BROKER, MQTT_PORT, MQTT_TOPIC, MQTT_DISCOVERY_TOPIC,
-    MQTT_AUTH_USER, MQTT_AUTH_PASSWORD, TIMEOUT_SECONDS
+    MQTT_AUTH_USER, MQTT_AUTH_PASSWORD, TIMEOUT_SECONDS, ACTION_KEYWORDS
 )
 
 logger = logging.getLogger("esp-miao.connection")
@@ -17,6 +17,7 @@ class DynamicDeviceTable:
     def __init__(self, devices: list[Device] = None):
         self._devices: dict[str, Device] = {d.name: d for d in (devices or [])}
         self._aliases: dict[str, str] = {} # alias -> device_name
+        self._action_keyword_map: dict[str, dict[str, list[str]]] = {} # device_name -> {on: [], off: []}
         self._update_aliases()
 
     def _update_aliases(self):
@@ -46,6 +47,7 @@ class DynamicDeviceTable:
             return
         
         dev_type = dev_info.get("type") or dev_info.get("device_type", "unknown")
+        action_kws = dev_info.get("action_keywords")
         
         new_dev = Device(
             name=name,
@@ -53,11 +55,22 @@ class DynamicDeviceTable:
             gpio=dev_info.get("gpio"),
             aliases=dev_info.get("aliases", []),
             control_topic=dev_info.get("control_topic", MQTT_TOPIC),
-            commands=dev_info.get("commands", {"on": "ON", "off": "OFF"})
+            commands=dev_info.get("commands", {"on": "ON", "off": "OFF"}),
+            action_keywords=action_kws
         )
         self._devices[name] = new_dev
+        
+        # Update action keyword map if provided
+        if action_kws:
+            self._action_keyword_map[name] = action_kws
+            logger.info(f"Custom action keywords registered for {name}")
+
         self._update_aliases()
         logger.info(f"Device registered/updated: {name} ({new_dev.type})")
+
+    def get_action_keywords(self, device_name: str) -> dict[str, list[str]]:
+        """Get action keywords for device, fallback to global defaults."""
+        return self._action_keyword_map.get(device_name, ACTION_KEYWORDS)
 
     @property
     def devices(self) -> list[Device]:

@@ -12,20 +12,26 @@ logger = logging.getLogger("esp-miao.intent")
 
 def extract_intent_from_text(text: str) -> dict:
     """
-    使用從 DeviceRegistry 獲獲取的動態別名地圖進行匹配。
+    使用從 DeviceRegistry 獲取的動態別名地圖進行匹配，並優先使用裝置專屬關鍵字。
     """
     text_lower = text.replace(" ", "").lower()
 
-    # 找出目標裝置 (動態查詢 alias_map)
+    # 1. 找出目標裝置 (動態查詢 alias_map)
     target = None
     for alias, device_name in device_table.alias_map.items():
         if alias in text_lower:
             target = device_name
             break
 
-    # 找出動作
+    if not target:
+        return {"action": "unknown", "target": "", "value": ""}
+
+    # 2. 獲取該裝置的動作關鍵字 (有專屬用專屬，無則 fallback 全域)
+    device_keywords = device_table.get_action_keywords(target)
+
+    # 3. 找出動作
     value = None
-    for action_value, keywords in ACTION_KEYWORDS.items():
+    for action_value, keywords in device_keywords.items():
         for keyword in keywords:
             if keyword in text_lower:
                 value = action_value
@@ -33,18 +39,11 @@ def extract_intent_from_text(text: str) -> dict:
         if value:
             break
 
-    if target and value:
+    if value:
         return {"action": "relay_set", "target": target, "value": value}
     
-    # 針對掃地機器人的特殊處理：如果只說了名字（例如：小貓），預設為啟動
-    if target:
-        device = device_table.get_device(target)
-        if device and device.type == "vacuum":
-            logger.info(f"Defaulting to 'on' for vacuum target: {target}")
-            return {"action": "relay_set", "target": target, "value": "on"}
-        return {"action": "unknown", "target": target, "value": ""}
-
-    return {"action": "unknown", "target": "", "value": ""}
+    # 原有的「掃地機預設啟動」邏輯已依計畫刪除，統一行為
+    return {"action": "unknown", "target": target, "value": ""}
 
 
 def parse_intent_with_llm(text: str, metrics_ctx: Optional[MetricsContext] = None) -> dict:
