@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.7.0] - 2026-03-18
+
+### Changed
+- **Firmware Architecture (ESP32)**: Complete Object-Oriented refactoring of the main firmware.
+  - Reduced `main.cpp` from 948 lines to ~100 lines.
+  - Abstracted hardware components into independent classes (`AudioCapture`, `HardwareController`, `VAD`).
+  - Abstracted network handling into `WifiManager` (with NVS auto-fallback) and `WebSocketClient`.
+  - Encapsulated inference and streaming logic into `WakeWordDetector` and `AudioStreamer`.
+- **WebSocket Protocol**: Improved `WEBSOCKET_EVENT_DATA` handler to explicitly filter out non-text frames (e.g., ping/binary), resolving "Invalid JSON" log spam during server keep-alive pings.
+
 ## [v0.6.6] - 2026-03-17
 
 ### Added

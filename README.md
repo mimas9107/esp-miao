@@ -1,6 +1,6 @@
 # ESP-MIAO (智慧語音控制系統)
 
-> **Version: 0.6.6**
+> **Version: 0.7.0**
 > 
 > 本專案為一個基於 ESP32 的智慧語音控制系統，具備 **Edge Impulse 喚醒詞偵測**、**即時串流音訊傳輸** 以及 **視覺化動畫 UI (Eye UI)**。系統透過語音喚醒 "heymiaomiao" 後，將音訊即時傳送至伺服器進行 ASR 與 LLM 意圖解析，並透過 MQTT 控制 IoT 裝置。
 
@@ -14,6 +14,12 @@ esp-miao/
 │   ├── esp32_edge_impulse/      # 主要韌體 (ESP-IDF v5.x)
 │   │   ├── components/          #   - UI 狀態機、Eye UI、TFT 驅動
 │   │   ├── main/                #   - 主邏輯、音訊管線、WebSocket
+│   │   │   ├── audio/           #       - AudioCapture, VAD
+│   │   │   ├── config/          #       - Config (全域常數)
+│   │   │   ├── logic/           #       - WakeWordDetector, AudioStreamer, HardwareController
+│   │   │   ├── network/         #       - WifiManager, WebSocketClient
+│   │   │   ├── time/            #       - TimeManager
+│   │   │   └── main.cpp         #       - 系統初始化與任務分配
 │   │   └── model-parameters/    #   - Edge Impulse 模型參數
 │   ├── esp32_client/            # 備用 Arduino Client 韌體
 │   └── mic_frontend_v1/         # 麥克風前端測試工具

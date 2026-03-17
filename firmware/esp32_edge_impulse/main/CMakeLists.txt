@@ -28,6 +28,12 @@ set(include_dirs
     ${EI_SDK_FOLDER}
     ${EI_SDK_FOLDER}/porting/espressif/esp-dsp/modules/fft/include
     ${EI_SDK_FOLDER}/porting/espressif/esp-dsp/modules/common/include
+    # v0.7.0 模組化子資料夾（Phase 1-4）
+    ${CMAKE_CURRENT_SOURCE_DIR}/config
+    ${CMAKE_CURRENT_SOURCE_DIR}/time
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio
+    ${CMAKE_CURRENT_SOURCE_DIR}/network
+    ${CMAKE_CURRENT_SOURCE_DIR}/logic
 )
 
 include(${EI_SDK_FOLDER}/cmake/utils.cmake)
@@ -46,7 +52,20 @@ list(APPEND SOURCE_FILES ${MODEL_FILES})
 list(APPEND SOURCE_FILES ${S_FILES_ESP_NN})
 list(APPEND SOURCE_FILES ${S_FILES_ESP_DSP})
 
-idf_component_register(SRCS "main.cpp" "${SOURCE_FILES}"
+# v0.7.0 模組化來源檔（Phase 1-4）
+set(MODULE_SRCS
+    config/config.cpp
+    time/time_manager.cpp
+    audio/audio_capture.cpp
+    audio/vad.cpp
+    network/wifi_manager.cpp
+    network/websocket_client.cpp
+    logic/hardware_controller.cpp
+    logic/audio_streamer.cpp
+    logic/wake_word_detector.cpp
+)
+
+idf_component_register(SRCS "main.cpp" "${SOURCE_FILES}" "${MODULE_SRCS}"
                        INCLUDE_DIRS "${include_dirs}"
                        REQUIRES esp_http_client esp_websocket_client esp_wifi esp_event nvs_flash esp_netif driver esp_timer esp_system esp_common json eye_ui ui_state TFT_eSPI)
 
