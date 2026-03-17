@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.6.6] - 2026-03-17
+
+### Added
+- **Display Power Management**: Implemented GPIO4-controlled display power for ST7735.
+  - Auto-off after 15 seconds of idle state to save power.
+  - Auto-on when leaving idle or entering active states.
+
+### Changed
+- **Eye UI**: Fixed indentation issues in `#if UI_LOG_FPS` block.
+
 ## [v0.6.5] - 2026-03-16
 
 ### Added

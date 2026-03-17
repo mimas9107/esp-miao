@@ -10,8 +10,37 @@
 #include "freertos/task.h"
 #include "ui_state.h"
 
+// ── Display power control ────────────────────────────────────────────────
+#define DISPLAY_EN_PIN   GPIO_NUM_4   // GPIO to control display power
+static bool display_is_on = false;
+
 // ── TFT instance ──────────────────────────────────────────────────────────────
 static TFT_eSPI tft = TFT_eSPI();
+
+// ── Display power control functions ────────────────────────────────────────
+static void display_power_on(void) {
+    // Turn on the display power
+    gpio_set_direction((gpio_num_t)DISPLAY_EN_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)DISPLAY_EN_PIN, 1);
+    // Wait for power to stabilize
+    vTaskDelay(pdMS_TO_TICKS(10));
+    // Initialize the display
+    tft.init();
+    tft.setRotation(0);
+    tft.fillScreen(ST7735_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(2);
+    display_is_on = true;
+}
+
+static void display_power_off(void) {
+    // Put the display to sleep to avoid any stray signals
+    tft.writecommand(ST7735_SLPIN);
+    // Turn off the display power
+    gpio_set_level((gpio_num_t)DISPLAY_EN_PIN, 0);
+
+    display_is_on = false;
+}
 
 // ── UI config ───────────────────────────────────────────────────────────────
 #define UI_TEST_MODE 0
@@ -161,10 +190,10 @@ static void draw_eyes(int x, int y, int offset_second_eye, int offset_happy_eye)
 static void ui_draw_text(const char *text) {
     // 低成本狀態顯示（英文文字）
     tft.fillScreen(ST7735_BLACK);
-    tft.setCursor(0, 50, 2);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextFont(2);   // Try to use font 2 (Ubuntu), will fall back to GLCD if not available
     tft.setTextSize(2);
-    tft.println(text);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(text, 0, 50);
 }
 
 static void ui_log_metrics(ui_state_t state) {
@@ -355,12 +384,16 @@ static void display_task(void *arg) {
     ui_state_t current_state = UI_IDLE;
     ui_apply_state(current_state);
     uint32_t state_enter_ms = (uint32_t)millis();
+    uint32_t last_idle_check_ms = state_enter_ms;
 
     const TickType_t frame_ticks = pdMS_TO_TICKS(1000 / UI_IDLE_FPS);
     TickType_t last_wake = xTaskGetTickCount();
     ui_event_t ev;
     uint32_t fps_last_ms = (uint32_t)millis();
     int fps_frames = 0;
+    
+    // Display power management settings
+    const uint32_t IDLE_TIMEOUT_MS = 15000; // Turn off display after 15 seconds of inactivity
 
     while (true) {
         if (current_state == UI_IDLE) {
@@ -369,11 +402,17 @@ static void display_task(void *arg) {
                 current_state = ev.state;
                 ui_apply_state(current_state);
                 state_enter_ms = (uint32_t)millis();
+                last_idle_check_ms = state_enter_ms;
+                
+                // Turn on display when leaving IDLE state
+                if (!display_is_on) {
+                    display_power_on();
+                }
                 continue;
             }
             loop_ui();
             delay(0);
-#if UI_LOG_FPS
+        #if UI_LOG_FPS
             fps_frames++;
             uint32_t now_ms = (uint32_t)millis();
             if (now_ms - fps_last_ms >= 1000U) {
@@ -381,14 +420,27 @@ static void display_task(void *arg) {
                 fps_frames = 0;
                 fps_last_ms = now_ms;
             }
-#endif
+        #endif
             vTaskDelayUntil(&last_wake, frame_ticks);
+            
+            // Check if we've been idle long enough to turn off display
+            uint32_t now_ms = (uint32_t)millis();
+            if (display_is_on && (now_ms - last_idle_check_ms >= IDLE_TIMEOUT_MS)) {
+                display_power_off();
+            }
         } else {
             // 非 Idle：等待新狀態，保持靜態顯示
             if (ui_pop_state(&ev, pdMS_TO_TICKS(50))) {
                 current_state = ev.state;
                 ui_apply_state(current_state);
                 state_enter_ms = (uint32_t)millis();
+                last_idle_check_ms = state_enter_ms;
+                
+                // Turn on display when entering non-IDLE state
+                if (!display_is_on) {
+                    display_power_on();
+                }
+                
                 if (current_state == UI_IDLE) {
                     idle_anim_reset();
                     last_wake = xTaskGetTickCount();
@@ -401,7 +453,13 @@ static void display_task(void *arg) {
                     ui_apply_state(current_state);
                     idle_anim_reset();
                     last_wake = xTaskGetTickCount();
+                    last_idle_check_ms = (uint32_t)millis();
                 }
+            }
+            
+            // Ensure display is on when in non-IDLE state
+            if (!display_is_on) {
+                display_power_on();
             }
         }
     }

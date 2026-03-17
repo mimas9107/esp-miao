@@ -928,9 +928,14 @@ extern "C" int app_main()
     }
     ESP_ERROR_CHECK(ret);
 
-    // Initialize UI State Queue and Start UI Task
-    ui_state_init();
-    eye_ui_start();
+     // Initialize UI State Queue and Start UI Task
+     ui_state_init();
+     eye_ui_start();
+     
+     // Initialize display power control (GPIO4)
+     gpio_reset_pin((gpio_num_t)DISPLAY_EN_PIN);
+     gpio_set_direction((gpio_num_t)DISPLAY_EN_PIN, GPIO_MODE_OUTPUT);
+     gpio_set_level((gpio_num_t)DISPLAY_EN_PIN, 0); // Start with display off
 
     setup_led();
     init_wifi();
