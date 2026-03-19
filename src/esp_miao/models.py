@@ -276,7 +276,6 @@ class Device(BaseModel):
     gpio: Optional[int] = Field(None, description="GPIO pin number (optional for MQTT/API devices)")
     aliases: list[str] = Field(default_factory=list, description="Alternative names for voice recognition")
     control_topic: Optional[str] = Field(None, description="MQTT topic for control")
-    api_url: Optional[str] = Field(None, description="Direct REST API URL for control (optional)")
     commands: dict[str, str] = Field(default_factory=dict, description="Map action value to MQTT/API payload")
     action_keywords: Optional[dict[str, list[str]]] = Field(None, description="Custom action keywords from discovery")
 

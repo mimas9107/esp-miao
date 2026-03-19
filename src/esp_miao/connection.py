@@ -23,16 +23,6 @@ class DynamicDeviceTable:
     def _update_aliases(self):
         """Rebuild alias map from current devices."""
         self._aliases = {}
-        # Hardcoded defaults for backward compatibility
-        defaults = {
-            "light": ["燈", "電燈", "燈光", "lights", "light"],
-            "fan": ["風扇", "電風扇", "電扇", "fans", "fan", "風山"],
-            "led": ["led", "LED", "指示燈"],
-        }
-        for name, aliases in defaults.items():
-            for alias in aliases:
-                self._aliases[alias] = name
-        
         # Add dynamic aliases from discovered devices
         for dev in self._devices.values():
             if dev.aliases:
@@ -68,6 +58,17 @@ class DynamicDeviceTable:
         self._update_aliases()
         logger.info(f"Device registered/updated: {name} ({new_dev.type})")
 
+    def remove_device(self, name: str):
+        """Remove device from table (e.g., on LWT offline)."""
+        if name in self._devices:
+            del self._devices[name]
+            if name in self._action_keyword_map:
+                del self._action_keyword_map[name]
+            self._update_aliases()
+            logger.info(f"Device removed: {name}")
+        else:
+            logger.warning(f"remove_device: '{name}' not found in table")
+
     def get_action_keywords(self, device_name: str) -> dict[str, list[str]]:
         """Get action keywords for device, fallback to global defaults."""
         return self._action_keyword_map.get(device_name, ACTION_KEYWORDS)
@@ -83,19 +84,8 @@ class DynamicDeviceTable:
     def get_device(self, name: str) -> Optional[Device]:
         return self._devices.get(name)
 
-# Initialize with static defaults
-device_table = DynamicDeviceTable(devices=[
-    Device(name="light", type="relay", gpio=26, control_topic="lamp/command"),
-    Device(name="fan", type="relay", gpio=27, control_topic="home/fan/command"),
-    Device(name="led", type="led", gpio=2, control_topic="home/led/command"),
-    Device(
-        name="vacuum", 
-        type="vacuum", 
-        aliases=["掃地機器人", "小貓", "吸塵器", "機器人", "掃地機", "掃地", "清掃", "少地"],
-        api_url="http://192.168.1.16:8009/v1/control/execute",
-        commands={"on": "start", "off": "home"}
-    ),
-])
+# Initialize with an empty table (Discovery-first)
+device_table = DynamicDeviceTable()
 
 # --- Action Validator (Safety) ---
 action_validator = ActionValidator(device_table)
@@ -110,11 +100,39 @@ def on_connect(client, userdata, flags, rc, properties):
     if rc == 0:
         logger.info("Connected to MQTT Broker!")
         client.subscribe(MQTT_DISCOVERY_TOPIC)
-        logger.info(f"Subscribed to discovery topic: {MQTT_DISCOVERY_TOPIC}")
+        client.subscribe("home/+/status")
+        logger.info(f"Subscribed to discovery ({MQTT_DISCOVERY_TOPIC}) and status topics")
     else:
         logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
 
+def on_message(client, userdata, msg):
+    """Handle incoming MQTT messages for discovery and status."""
+    logger.info(f"Received MQTT message on topic: {msg.topic}")
+    try:
+        if msg.topic == MQTT_DISCOVERY_TOPIC:
+            payload = json.loads(msg.payload.decode())
+            logger.info(f"Processing discovery payload: {payload}")
+            device_table.update_device(payload)
+        elif msg.topic.endswith("/status"):
+            payload = json.loads(msg.payload.decode())
+            logger.info(f"Processing status payload: {payload}")
+            if payload.get("status") == "offline":
+                device_id = payload.get("device_id")
+                if device_id:
+                    device_table.remove_device(device_id)
+            elif payload.get("status") == "online":
+                logger.info(f"Device online: {payload.get('device_id')}")
+    except Exception as e:
+        logger.warning(f"MQTT message processing error on topic {msg.topic}: {e}")
+
 mqtt_client.on_connect = on_connect
+
+def on_log(client, userdata, level, buf):
+    """MQTT Internal Log Handler."""
+    logger.debug(f"MQTT Log: {buf}")
+
+mqtt_client.on_log = on_log
+mqtt_client.on_message = on_message
 
 # --- Connection Manager (WebSocket) ---
 class ConnectionManager:

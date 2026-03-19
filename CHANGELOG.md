@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.7.1] - 2026-03-19
+
+### Changed
+- **Server Architecture**: Decoupled static device configuration from server core.
+  - Initialized `device_table` as empty to enforce Discovery-first design.
+  - Removed all hardcoded device aliases and default entries.
+  - Unified command dispatching to MQTT-only; removed legacy HTTP API bridge.
+- **MQTT Protocol**: Implemented real-time device offline synchronization.
+  - Added support for MQTT LWT (Last Will and Testament).
+  - Server now subscribes to `home/+/status` to dynamic remove/update devices based on `online/offline` messages.
+- **Device Firmware (ESP32)**: Updated light and fan firmware with LWT and status reporting.
+  - Devices now publish `online` status on connect and register via Discovery.
+  - LWT ensures the server removes devices immediately upon disconnection.
+
 ## [v0.7.0] - 2026-03-18
 
 ### Changed

@@ -1,6 +1,6 @@
 # Engineering Specs
 
-> 最後更新：2026-03-12
+> 最後更新：2026-03-19 (v0.7.1)
 >
 > 本文件定義 ESP-MIAO 專案的通訊協議、狀態機、硬體配置與系統架構。
 
@@ -181,6 +181,46 @@ WAIT_ACTION (Thinking) ──────────→ 收到 Action ───
 | Pin | GPIO | Function |
 |-----|------|----------|
 | LED | 2    | Internal Status LED |
+
+---
+
+## 6. MQTT IoT Protocol (Discovery & LWT)
+
+為了實現去中心化管理，所有受控裝置必須實作動態註冊與狀態同步機制。
+
+### 6.1 Device Discovery (註冊)
+
+裝置連線成功後，應向 `home/discovery` 發送一個 **Retained** 的 JSON 訊息。
+
+**Topic:** `home/discovery`  
+**Payload 格式:**
+```json
+{
+  "device_id": "vacuum_01",
+  "device_type": "vacuum | relay | led",
+  "aliases": ["小貓", "掃地機"],
+  "control_topic": "home/vacuum_01/cmd",
+  "commands": {"on": "START", "off": "DOCK"},
+  "action_keywords": {
+    "on": ["掃地", "啟動"],
+    "off": ["停止", "休息"]
+  }
+}
+```
+
+### 6.2 Availability & LWT (狀態同步)
+
+裝置必須利用 MQTT LWT (Last Will and Testament) 確保離線時伺服器能即時清理狀態。
+
+*   **LWT Topic:** `home/{device_id}/status`
+*   *Payload 格式:* `{"status": "offline", "device_id": "{device_id}"}`
+*   **Retain:** `true`
+*   **QoS:** `1`
+
+**連線成功後應發布 Online 狀態:**
+*   **Topic:** `home/{device_id}/status`
+*   *Payload 格式:* `{"status": "online", "device_id": "{device_id}"}`
+*   **Retain:** `true`
 
 ---
 

@@ -67,7 +67,7 @@ void sendDiscoveryMessage() {
   const char* discoveryTopic = "home/discovery";
   
   StaticJsonDocument<1024> doc;
-  doc["device_id"] = "light_02v2";
+  doc["device_id"] = "light_01";
   doc["device_type"] = "relay";
   
   JsonArray aliases = doc.createNestedArray("aliases");
@@ -92,7 +92,6 @@ void sendDiscoveryMessage() {
   kw_on.add("turn on");
   kw_on.add("on");
   kw_on.add("open");
-  kw_on.add("kaitan");
 
   JsonArray kw_off = action_keywords.createNestedArray("off");
   kw_off.add("關");
@@ -102,7 +101,6 @@ void sendDiscoveryMessage() {
   kw_off.add("turn off");
   kw_off.add("off");
   kw_off.add("close");
-  kw_off.add("kuan teng");
 
   String payload;
   serializeJson(doc, payload);
@@ -110,7 +108,7 @@ void sendDiscoveryMessage() {
   Serial.println("發送 Discovery 註冊訊息 (ArduinoJson)...");
   Serial.println(payload);
   
-  if (mqttClient.publish(discoveryTopic, payload.c_str())) {
+  if (mqttClient.publish(discoveryTopic, payload.c_str(), true)) { // retain=true
     Serial.println("Discovery 註冊成功！✅");
   } else {
     Serial.println("Discovery 註冊失敗！❌");
@@ -123,8 +121,18 @@ void connectToMQTT() {
     Serial.print("正在連接MQTT...");
     String clientId = "ESP32-SmartLight-" + String(random(0xffff), HEX);
     
-    if (mqttClient.connect(clientId.c_str(),mqtt_user,mqtt_password)) {
+    // 設定 LWT (Last Will and Testament)
+    // Topic: home/light_01/status
+    // Payload: {"status":"offline","device_id":"light_01"}
+    String lwtTopic = "home/light_01/status";
+    String lwtPayload = "{\"status\":\"offline\",\"device_id\":\"light_01\"}";
+    
+    if (mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_password, 
+                          lwtTopic.c_str(), 1, true, lwtPayload.c_str())) {
       Serial.println("MQTT連線成功！");
+      
+      // 連線成功後發布 Online 狀態
+      mqttClient.publish(lwtTopic.c_str(), "{\"status\":\"online\",\"device_id\":\"light_01\"}", true);
       
       // 連線成功後立即執行註冊與訂閱
       sendDiscoveryMessage();
