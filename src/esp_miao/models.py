@@ -278,6 +278,7 @@ class Device(BaseModel):
     control_topic: Optional[str] = Field(None, description="MQTT topic for control")
     commands: dict[str, str] = Field(default_factory=dict, description="Map action value to MQTT/API payload")
     action_keywords: Optional[dict[str, list[str]]] = Field(None, description="Custom action keywords from discovery")
+    is_online: bool = Field(True, description="Whether the device is currently online")
 
     @field_validator("gpio")
     @classmethod

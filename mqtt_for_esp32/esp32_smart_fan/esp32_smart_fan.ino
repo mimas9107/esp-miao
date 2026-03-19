@@ -34,10 +34,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   if (message == "ON") {
     digitalWrite(relayPin, HIGH);
-    mqttClient.publish(mqttStatusTopic, "ON");  // 回報狀態
+    mqttClient.publish(mqttStatusTopic, "{\"status\":\"ON\",\"device_id\":\"fan_01\"}");  // 回報狀態 (JSON)
   } else if (message == "OFF") {
     digitalWrite(relayPin, LOW);
-    mqttClient.publish(mqttStatusTopic, "OFF"); // 回報狀態
+    mqttClient.publish(mqttStatusTopic, "{\"status\":\"OFF\",\"device_id\":\"fan_01\"}"); // 回報狀態 (JSON)
   }
 }
 
@@ -118,6 +118,9 @@ void sendDiscoveryMessage() {
 void connectToMQTT() {
   if (!mqttClient.connected()) {
     Serial.print("正在連接MQTT...");
+    
+    // 確保隨機種子初始化，避免 Reset 後產生相同的 Client ID 導致擠線
+    randomSeed(micros());
     String clientId = "ESP32-SmartFan-" + String(random(0xffff), HEX);
     
     // 設定 LWT (Last Will and Testament)
@@ -148,13 +151,13 @@ void connectToMQTT() {
 void setupHttpServer() {
   server.on("/on", HTTP_GET, [](AsyncWebServerRequest *request){
     digitalWrite(relayPin, HIGH);
-    mqttClient.publish(mqttStatusTopic, "ON");
+    mqttClient.publish(mqttStatusTopic, "{\"status\":\"ON\",\"device_id\":\"fan_01\"}");
     request->send(200, "text/plain", "風扇已開啟");
   });
   
   server.on("/off", HTTP_GET, [](AsyncWebServerRequest *request){
     digitalWrite(relayPin, LOW);
-    mqttClient.publish(mqttStatusTopic, "OFF");
+    mqttClient.publish(mqttStatusTopic, "{\"status\":\"OFF\",\"device_id\":\"fan_01\"}");
     request->send(200, "text/plain", "風扇已關閉");
   });
   
@@ -174,11 +177,12 @@ void setup() {
   mqttClient.setServer(mqtt_server, 1883);
   mqttClient.setBufferSize(1024); // 增加緩衝區以支援較大的 Discovery JSON
   mqttClient.setCallback(mqttCallback);
+  mqttClient.setKeepAlive(60);   // 增加 Keep-Alive 時間到 60 秒，提高穩定性
 
   setupHttpServer();
 
-  // WiFi低功耗模式
-  WiFi.setSleep(true);
+  // WiFi低功耗模式 (在 MQTT 長連接應用中建議關閉，避免斷線)
+  // WiFi.setSleep(true);
 }
 
 // ====================【主迴圈 loop()】====================

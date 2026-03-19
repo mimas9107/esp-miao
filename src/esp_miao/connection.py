@@ -58,14 +58,23 @@ class DynamicDeviceTable:
         self._update_aliases()
         logger.info(f"Device registered/updated: {name} ({new_dev.type})")
 
+    def set_device_status(self, name: str, is_online: bool):
+        """Update device online/offline status without removing it."""
+        if name in self._devices:
+            self._devices[name].is_online = is_online
+            status_str = "online" if is_online else "offline"
+            logger.info(f"Device '{name}' status updated to {status_str}")
+        else:
+            logger.warning(f"set_device_status: '{name}' not found in table")
+
     def remove_device(self, name: str):
-        """Remove device from table (e.g., on LWT offline)."""
+        """Remove device from table (e.g., on specific cleanup)."""
         if name in self._devices:
             del self._devices[name]
             if name in self._action_keyword_map:
                 del self._action_keyword_map[name]
             self._update_aliases()
-            logger.info(f"Device removed: {name}")
+            logger.info(f"Device permanently removed: {name}")
         else:
             logger.warning(f"remove_device: '{name}' not found in table")
 
@@ -116,12 +125,14 @@ def on_message(client, userdata, msg):
         elif msg.topic.endswith("/status"):
             payload = json.loads(msg.payload.decode())
             logger.info(f"Processing status payload: {payload}")
+            device_id = payload.get("device_id")
+            if not device_id:
+                return
+
             if payload.get("status") == "offline":
-                device_id = payload.get("device_id")
-                if device_id:
-                    device_table.remove_device(device_id)
-            elif payload.get("status") == "online":
-                logger.info(f"Device online: {payload.get('device_id')}")
+                device_table.set_device_status(device_id, False)
+            elif payload.get("status") in ["online", "ON", "OFF"]:
+                device_table.set_device_status(device_id, True)
     except Exception as e:
         logger.warning(f"MQTT message processing error on topic {msg.topic}: {e}")
 

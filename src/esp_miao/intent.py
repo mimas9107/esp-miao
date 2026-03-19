@@ -62,17 +62,15 @@ def parse_intent_with_llm(text: str, metrics_ctx: Optional[MetricsContext] = Non
     # --- 優先攔截邏輯 (Priority Logic) ---
     # 如果關鍵字已經能明確識別出目標與動作，直接返回，跳過 LLM 以降低延遲
     if keyword_intent["action"] != "unknown" and keyword_intent["target"] in current_devices:
-        logger.info(f"Priority Logic: Keyword match successful for '{text}', skipping LLM.")
-        if metrics_ctx: metrics_ctx.set_flag("llm_called", False)
-        return keyword_intent
+        device = device_table.get_device(keyword_intent["target"])
+        if device and device.is_online:
+            logger.info(f"Priority Logic: Keyword match successful for '{text}', skipping LLM.")
+            if metrics_ctx: metrics_ctx.set_flag("llm_called", False)
+            return keyword_intent
+        else:
+            logger.warning(f"Target '{keyword_intent['target']}' found but is OFFLINE. Continuing to LLM for potential feedback.")
 
-    # 如果內容完全沒提到裝置名稱且關鍵字解析失敗，不送 LLM，直接回傳 unknown
-    if keyword_intent["target"] == "" and keyword_intent["action"] == "unknown":
-        logger.info(f"Pre-filter: No devices found in '{text}', skipping LLM.")
-        if metrics_ctx: metrics_ctx.set_flag("llm_called", False)
-        return keyword_intent
-
-    # 方案 B: 動態 LLM Prompt
+    # 方案 B: 動態 LLM Prompt (如果關鍵字沒中，或裝置離線)
     if metrics_ctx: metrics_ctx.set_flag("llm_called", True)
     
     prompt = f"""Task: Convert voice command to JSON.
