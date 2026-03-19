@@ -50,7 +50,9 @@ void connectToWiFi() {
   
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi連線成功！");
-    WiFi.setSleep(WIFI_PS_NONE);
+    // --- 實驗性變因：省電模式選擇 ---
+    WiFi.setSleep(WIFI_PS_NONE);      // 效能模式：完全不休眠 (Fan 通常不差這點電)
+    // WiFi.setSleep(WIFI_PS_MIN_MODEM); // 平衡模式
   }
 }
 

@@ -28,7 +28,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   if (message == "ON") {
     digitalWrite(relayPin, HIGH);
-    // 使用新的 state 欄位發送到 /state 主題，這比 status 合理多了
     mqttClient.publish(mqttStateTopic, "{\"state\":\"ON\",\"device_id\":\"light_01\"}");
   } else if (message == "OFF") {
     digitalWrite(relayPin, LOW);
@@ -51,8 +50,10 @@ void connectToWiFi() {
   
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi連線成功！");
-    // 徹底禁用 WiFi 所有省電功能
-    WiFi.setSleep(WIFI_PS_NONE);
+    // --- 實驗性變因：省電模式選擇 ---
+    // WiFi.setSleep(WIFI_PS_NONE);      // 效能模式：完全不休眠，發熱最高，連線最穩
+    WiFi.setSleep(WIFI_PS_MIN_MODEM); // 平衡模式：DTIM 間隔休眠，降低發熱 (預設)
+    // WiFi.setSleep(WIFI_PS_MAX_MODEM); // 強力省電：深度休眠，發熱最低，最不穩定
   }
 }
 
@@ -88,16 +89,13 @@ void sendDiscoveryMessage() {
 void connectToMQTT() {
   if (!mqttClient.connected()) {
     Serial.print("正在連接MQTT...");
-    // 固定使用 MAC 地址，防止踢線
     String clientId = "ESP32-Light-" + WiFi.macAddress();
     
-    // 設定 LWT (最後遺言)，這才是真正的 status 意義：代表離線
     String lwtPayload = "{\"status\":\"offline\",\"device_id\":\"light_01\"}";
     
     if (mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_password, 
                           mqttStatusTopic, 1, true, lwtPayload.c_str())) {
       Serial.println("MQTT連線成功！");
-      // 回報在線
       mqttClient.publish(mqttStatusTopic, "{\"status\":\"online\",\"device_id\":\"light_01\"}", true);
       sendDiscoveryMessage();
       mqttClient.subscribe(mqttCommandTopic);
@@ -129,7 +127,6 @@ void setup() {
   mqttClient.setServer(mqtt_server, 1883);
   mqttClient.setBufferSize(1024);
   mqttClient.setCallback(mqttCallback);
-  // 放寬 Keep-Alive 到 60 秒，有效避免 30 秒自動斷線
   mqttClient.setKeepAlive(60); 
   setupHttpServer();
 }
@@ -137,7 +134,9 @@ void setup() {
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     connectToWiFi();
-    WiFi.setSleep(WIFI_PS_NONE);
+    // 重新連線後再次確認模式 (請在此同步調整)
+    // WiFi.setSleep(WIFI_PS_NONE);
+    WiFi.setSleep(WIFI_PS_MIN_MODEM);
   }
   if (!mqttClient.connected()) {
     connectToMQTT();
