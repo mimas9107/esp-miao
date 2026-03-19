@@ -122,17 +122,24 @@ def on_message(client, userdata, msg):
             payload = json.loads(msg.payload.decode())
             logger.info(f"Processing discovery payload: {payload}")
             device_table.update_device(payload)
-        elif msg.topic.endswith("/status"):
+        elif msg.topic.endswith("/status") or msg.topic.endswith("/state"):
             payload = json.loads(msg.payload.decode())
-            logger.info(f"Processing status payload: {payload}")
+            logger.info(f"Processing {msg.topic.split('/')[-1]} payload: {payload}")
             device_id = payload.get("device_id")
             if not device_id:
                 return
 
-            if payload.get("status") == "offline":
-                device_table.set_device_status(device_id, False)
-            elif payload.get("status") in ["online", "ON", "OFF"]:
+            # 處理在線狀態 (Availability)
+            if "status" in payload:
+                if payload.get("status") == "offline":
+                    device_table.set_device_status(device_id, False)
+                else:
+                    device_table.set_device_status(device_id, True)
+            
+            # 處理功能狀態 (State) - 同時視為裝置在線的證明
+            if "state" in payload:
                 device_table.set_device_status(device_id, True)
+                logger.debug(f"Device {device_id} reported functional state: {payload.get('state')}")
     except Exception as e:
         logger.warning(f"MQTT message processing error on topic {msg.topic}: {e}")
 

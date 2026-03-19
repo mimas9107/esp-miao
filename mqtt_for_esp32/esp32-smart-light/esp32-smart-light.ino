@@ -7,16 +7,11 @@
 #include "credential.h"
 
 // ====================【自訂參數設定區】====================
-// const char* ssid = "<YOUR WiFi ssid>";
-// const char* password = "<YOUR WiFi password>";
-// const char* mqtt_server ="<YOUR MQTT Broker ip>";
+const int relayPin = 5; 
 
-
-//const int relayPin = 26; // Relay接腳 (請根據你的接腳改)
-const int relayPin=5; // 測試暫時用亮燈的方式來表示
-
-const char* mqttCommandTopic = "lamp/command"; // MQTT指令 Topic
-const char* mqttStatusTopic  = "lamp/status";  // 回報狀態用的 Topic
+const char* mqttCommandTopic = "lamp/command";
+const char* mqttStatusTopic  = "home/light_01/status"; // 僅用於 Availability (LWT)
+const char* mqttStateTopic   = "home/light_01/state";  // 用於功能狀態回報 (State)
 
 // ====================【系統變數】====================
 WiFiClient espClient;
@@ -33,10 +28,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   if (message == "ON") {
     digitalWrite(relayPin, HIGH);
-    mqttClient.publish(mqttStatusTopic, "ON");  // 回報狀態
+    // 使用新的 state 欄位發送到 /state 主題，這比 status 合理多了
+    mqttClient.publish(mqttStateTopic, "{\"state\":\"ON\",\"device_id\":\"light_01\"}");
   } else if (message == "OFF") {
     digitalWrite(relayPin, LOW);
-    mqttClient.publish(mqttStatusTopic, "OFF"); // 回報狀態
+    mqttClient.publish(mqttStateTopic, "{\"state\":\"OFF\",\"device_id\":\"light_01\"}");
   }
 }
 
@@ -55,27 +51,20 @@ void connectToWiFi() {
   
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi連線成功！");
-    Serial.print("IP地址: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("\nWiFi連線失敗，將自動重試");
+    // 徹底禁用 WiFi 所有省電功能
+    WiFi.setSleep(WIFI_PS_NONE);
   }
 }
 
 // ====================【MQTT 註冊管理 (Discovery)】====================
 void sendDiscoveryMessage() {
   const char* discoveryTopic = "home/discovery";
-  
   StaticJsonDocument<1024> doc;
   doc["device_id"] = "light_01";
   doc["device_type"] = "relay";
   
   JsonArray aliases = doc.createNestedArray("aliases");
-  aliases.add("燈");
-  aliases.add("電燈");
-  aliases.add("燈光");
-  aliases.add("lights");
-  aliases.add("light");
+  aliases.add("燈"); aliases.add("電燈"); aliases.add("燈光"); aliases.add("light");
   
   doc["control_topic"] = mqttCommandTopic;
   
@@ -85,112 +74,73 @@ void sendDiscoveryMessage() {
 
   JsonObject action_keywords = doc.createNestedObject("action_keywords");
   JsonArray kw_on = action_keywords.createNestedArray("on");
-  kw_on.add("開");
-  kw_on.add("打開");
-  kw_on.add("開啟");
-  kw_on.add("啟動");
-  kw_on.add("turn on");
-  kw_on.add("on");
-  kw_on.add("open");
-
+  kw_on.add("開"); kw_on.add("打開"); kw_on.add("開啟");
+  
   JsonArray kw_off = action_keywords.createNestedArray("off");
-  kw_off.add("關");
-  kw_off.add("關閉");
-  kw_off.add("關掉");
-  kw_off.add("停止");
-  kw_off.add("turn off");
-  kw_off.add("off");
-  kw_off.add("close");
+  kw_off.add("關"); kw_off.add("關閉"); kw_off.add("關掉");
 
   String payload;
   serializeJson(doc, payload);
-
-  Serial.println("發送 Discovery 註冊訊息 (ArduinoJson)...");
-  Serial.println(payload);
-  
-  if (mqttClient.publish(discoveryTopic, payload.c_str(), true)) { // retain=true
-    Serial.println("Discovery 註冊成功！✅");
-  } else {
-    Serial.println("Discovery 註冊失敗！❌");
-  }
+  mqttClient.publish(discoveryTopic, payload.c_str(), true);
 }
 
 // ====================【MQTT連線管理】====================
 void connectToMQTT() {
   if (!mqttClient.connected()) {
     Serial.print("正在連接MQTT...");
-    String clientId = "ESP32-SmartLight-" + String(random(0xffff), HEX);
+    // 固定使用 MAC 地址，防止踢線
+    String clientId = "ESP32-Light-" + WiFi.macAddress();
     
-    // 設定 LWT (Last Will and Testament)
-    // Topic: home/light_01/status
-    // Payload: {"status":"offline","device_id":"light_01"}
-    String lwtTopic = "home/light_01/status";
+    // 設定 LWT (最後遺言)，這才是真正的 status 意義：代表離線
     String lwtPayload = "{\"status\":\"offline\",\"device_id\":\"light_01\"}";
     
     if (mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_password, 
-                          lwtTopic.c_str(), 1, true, lwtPayload.c_str())) {
+                          mqttStatusTopic, 1, true, lwtPayload.c_str())) {
       Serial.println("MQTT連線成功！");
-      
-      // 連線成功後發布 Online 狀態
-      mqttClient.publish(lwtTopic.c_str(), "{\"status\":\"online\",\"device_id\":\"light_01\"}", true);
-      
-      // 連線成功後立即執行註冊與訂閱
+      // 回報在線
+      mqttClient.publish(mqttStatusTopic, "{\"status\":\"online\",\"device_id\":\"light_01\"}", true);
       sendDiscoveryMessage();
-      mqttClient.subscribe(mqttCommandTopic); // 訂閱指令Topic
+      mqttClient.subscribe(mqttCommandTopic);
     } else {
-      Serial.print("MQTT連線失敗, rc=");
-      Serial.println(mqttClient.state());
-      delay(5000); // 失敗後延遲再重試
+      delay(5000);
     }
   }
 }
 
-// ====================【HTTP控制介面】====================
 void setupHttpServer() {
   server.on("/on", HTTP_GET, [](AsyncWebServerRequest *request){
     digitalWrite(relayPin, HIGH);
-    mqttClient.publish(mqttStatusTopic, "ON");
+    mqttClient.publish(mqttStateTopic, "{\"state\":\"ON\",\"device_id\":\"light_01\"}");
     request->send(200, "text/plain", "燈已開啟");
   });
-  
   server.on("/off", HTTP_GET, [](AsyncWebServerRequest *request){
     digitalWrite(relayPin, LOW);
-    mqttClient.publish(mqttStatusTopic, "OFF");
+    mqttClient.publish(mqttStateTopic, "{\"state\":\"OFF\",\"device_id\":\"light_01\"}");
     request->send(200, "text/plain", "燈已關閉");
   });
-  
   server.begin();
-  Serial.println("HTTP Server啟動完成！");
 }
 
-// ====================【主程式入口 setup()】====================
 void setup() {
   Serial.begin(115200);
-  
   pinMode(relayPin, OUTPUT);
-  digitalWrite(relayPin, LOW); // 開機預設關閉燈
-
+  digitalWrite(relayPin, LOW);
   connectToWiFi();
-
   mqttClient.setServer(mqtt_server, 1883);
-  mqttClient.setBufferSize(1024); // 增加緩衝區以支援較大的 Discovery JSON
+  mqttClient.setBufferSize(1024);
   mqttClient.setCallback(mqttCallback);
-
+  // 放寬 Keep-Alive 到 60 秒，有效避免 30 秒自動斷線
+  mqttClient.setKeepAlive(60); 
   setupHttpServer();
-
-  // WiFi低功耗模式
-  WiFi.setSleep(true);
 }
 
-// ====================【主迴圈 loop()】====================
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     connectToWiFi();
+    WiFi.setSleep(WIFI_PS_NONE);
   }
-  delay(10);
   if (!mqttClient.connected()) {
     connectToMQTT();
   }
-
-  mqttClient.loop(); // MQTT一定要呼叫這個來保持連線
+  mqttClient.loop();
 }
