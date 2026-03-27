@@ -72,4 +72,4 @@ managed_components/
 # Session files
 # =========================
 session-*.md
-develop_journal/
+#develop_journal/
