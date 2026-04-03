@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.0] - 2026-04-03
+
+### Added
+- **Cat UI Animation System**: Replaced the basic eye UI with a highly interactive "Big-faced Cat" emotion state machine.
+  - **Emotion States**: Implemented 4 core modes: `IDLE` (blinking), `THINKING` (smiling eyes), `LISTENING` (confusion jitter), and `SLEEPING` (closed eyes with Zzz floating animation).
+  - **Ear Physics**: Added dynamic ear movements based on emotion (alert jittering vs. low-frequency relaxed twitching).
+  - **Visual Enhancements**: Added a thick "omega" (ꞷ) mouth and pink nose for a more expressive neon-style aesthetic.
+- **Double Buffering (TFT_eSprite)**: Integrated `TFT_eSprite` to eliminate animation flickering on ST7735 displays.
+
+### Changed
+- **Power Management**: Optimized sleep sequence.
+  - The display now stays on for **5 seconds** to show the sleeping animation before powering off.
+  - Any state change now automatically wakes up the display to ensure visual feedback.
+
 ## [v0.7.1] - 2026-03-19
 
 ### Changed
