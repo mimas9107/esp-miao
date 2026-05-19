@@ -86,10 +86,15 @@ Response in ONE LINE JSON format ONLY:
 
     try:
         t_llm = time.time()
-        response = ollama.generate(model="qwen2.5:0.5b", prompt=prompt)
+        response = ollama.generate(model="qwen2.5:0.5b", prompt=prompt, stream=True)
+        
+        full_response = ""
+        for chunk in response:
+            full_response += chunk["response"]
+        
         if metrics_ctx: metrics_ctx.record_latency("llm_inference_latency", round(time.time() - t_llm, 3))
         
-        result_text = response["response"]
+        result_text = full_response
 
         # Extract JSON from response
         json_match = re.search(r"\{[^}]+\}", result_text)
