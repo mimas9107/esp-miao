@@ -1,6 +1,6 @@
 /*
  * websocket_client.cpp - WebSocket 連線管理實作
- * ESP-MIAO v0.7.0
+ * ESP-MIAO v0.8.0
  */
 
 #include "websocket_client.h"

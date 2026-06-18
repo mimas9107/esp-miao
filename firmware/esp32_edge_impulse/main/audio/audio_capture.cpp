@@ -1,6 +1,6 @@
 /*
  * audio_capture.cpp - I2S 音訊擷取實作
- * ESP-MIAO v0.7.0
+ * ESP-MIAO v0.8.0
  *
  * 硬體：INMP441（BCK=32, WS=25, DIN=33）
  * 模式：Stereo 讀取 + 軟體取左聲道

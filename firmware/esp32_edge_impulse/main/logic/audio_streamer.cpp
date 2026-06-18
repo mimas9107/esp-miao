@@ -1,6 +1,6 @@
 /*
  * audio_streamer.cpp - 實時二進位音訊串流實作
- * ESP-MIAO v0.7.0
+ * ESP-MIAO v0.8.0
  */
 
 #include "audio_streamer.h"

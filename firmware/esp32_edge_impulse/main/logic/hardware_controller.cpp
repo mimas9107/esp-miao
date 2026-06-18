@@ -1,6 +1,6 @@
 /*
  * hardware_controller.cpp - LED / GPIO 硬體控制實作
- * ESP-MIAO v0.7.0
+ * ESP-MIAO v0.8.0
  */
 
 #include "hardware_controller.h"

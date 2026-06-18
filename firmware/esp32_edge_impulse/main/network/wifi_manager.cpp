@@ -1,6 +1,6 @@
 /*
  * wifi_manager.cpp - WiFi 連線管理實作
- * ESP-MIAO v0.7.0
+ * ESP-MIAO v0.8.0
  */
 
 #include "wifi_manager.h"

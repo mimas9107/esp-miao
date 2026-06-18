@@ -1,5 +1,5 @@
 /*
- * main.cpp - ESP-MIAO v0.7.0 主入口
+ * main.cpp - ESP-MIAO v0.8.0 主入口
  *
  * Hardware: ESP32 DevKit V1 + INMP441
  * Model:    esp-miao-mfcc (heymiaomiao / noise / unknown)
@@ -22,7 +22,7 @@
 #include "eye_ui.h"
 #include "ui_state.h"
 
-/* ---------- v0.7.0 模組引入 ---------- */
+/* ---------- v0.8.0 模組引入 ---------- */
 #include "config.h"
 #include "time_manager.h"
 #include "audio_capture.h"

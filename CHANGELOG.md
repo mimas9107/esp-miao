@@ -1,3 +1,13 @@
+---
+name:          "CHANGELOG.md"
+description:   "版本變更歷史"
+created_date:  "2026/02/15 10:00:00"
+modified_date: "2026/06/18 10:45:00"
+project_version: "0.8.0"
+document_version: "1.0.0"
+agent_sign: ['human/mimas', 'gemini cli/gemini-cli']
+---
+
 # Changelog
 
 All notable changes to this project will be documented in this file.

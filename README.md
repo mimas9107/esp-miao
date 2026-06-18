@@ -1,3 +1,13 @@
+---
+name:          "README.md"
+description:   "專案說明文件"
+created_date:  "2026/02/15 10:00:00"
+modified_date: "2026/06/18 10:45:00"
+project_version: "0.8.0"
+document_version: "1.0.0"
+agent_sign: ['human/mimas', 'gemini cli/gemini-cli']
+---
+
 # ESP-MIAO (智慧語音控制系統)
 
 > **Version: 0.8.0**

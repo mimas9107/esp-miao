@@ -1,6 +1,6 @@
 /*
  * wake_word_detector.cpp - 喚醒詞偵測主控器實作
- * ESP-MIAO v0.7.0
+ * ESP-MIAO v0.8.0
  */
 
 #include "wake_word_detector.h"

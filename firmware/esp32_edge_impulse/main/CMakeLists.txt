@@ -28,7 +28,7 @@ set(include_dirs
     ${EI_SDK_FOLDER}
     ${EI_SDK_FOLDER}/porting/espressif/esp-dsp/modules/fft/include
     ${EI_SDK_FOLDER}/porting/espressif/esp-dsp/modules/common/include
-    # v0.7.0 模組化子資料夾（Phase 1-4）
+    # v0.8.0 模組化子資料夾（Phase 1-4）
     ${CMAKE_CURRENT_SOURCE_DIR}/config
     ${CMAKE_CURRENT_SOURCE_DIR}/time
     ${CMAKE_CURRENT_SOURCE_DIR}/audio
@@ -52,7 +52,7 @@ list(APPEND SOURCE_FILES ${MODEL_FILES})
 list(APPEND SOURCE_FILES ${S_FILES_ESP_NN})
 list(APPEND SOURCE_FILES ${S_FILES_ESP_DSP})
 
-# v0.7.0 模組化來源檔（Phase 1-4）
+# v0.8.0 模組化來源檔（Phase 1-4）
 set(MODULE_SRCS
     config/config.cpp
     time/time_manager.cpp
