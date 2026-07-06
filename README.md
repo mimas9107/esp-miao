@@ -3,14 +3,14 @@ name:          "README.md"
 description:   "專案說明文件"
 created_date:  "2026/02/15 10:00:00"
 modified_date: "2026/06/18 10:45:00"
-project_version: "0.8.0"
+project_version: "0.8.1"
 document_version: "1.0.0"
 agent_sign: ['human/mimas', 'gemini cli/gemini-cli']
 ---
 
 # ESP-MIAO (智慧語音控制系統)
 
-> **Version: 0.8.0**
+> **Version: 0.8.1**
 > 
 > 本專案為一個基於 ESP32 的智慧語音控制系統，具備 **Edge Impulse 喚醒詞偵測**、**即時串流音訊傳輸** 以及 **互動式大臉貓 UI (Cat Eye UI)**。系統透過語音喚醒 "heymiaomiao" 後，將音訊即時傳送至伺服器進行 ASR 與 LLM 意圖解析，並透過 MQTT 控制 IoT 裝置。
 

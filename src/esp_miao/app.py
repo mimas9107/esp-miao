@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -425,14 +426,16 @@ async def lifespan(app: FastAPI):
     # Ensure audio directory exists
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Start Metrics Logger
-    init_metrics()
+    # Start Metrics Logger (disabled via ESP_MIAO_METRICS=0)
+    if os.getenv("ESP_MIAO_METRICS", "1") == "1":
+        init_metrics()
     
     yield
     
     logger.info("ESP-MIAO Server shutting down...")
     # Stop Metrics Logger
-    shutdown_metrics()
+    if os.getenv("ESP_MIAO_METRICS", "1") == "1":
+        shutdown_metrics()
     
     # Gracefully stop MQTT
     mqtt_client.loop_stop()
